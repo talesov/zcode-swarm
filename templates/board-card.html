@@ -1,0 +1,580 @@
+<div id="zcode-swarm-board" class="card">
+<style>
+  /* 会话内看板卡片：艺术化扁平 · 极客风。颜色取 ZCode visualize 主题变量，深浅自适应。
+     布局原则：绝不设 max-height / overflow-y（宿主容器出滚轮的根源是内容总高——用双列网格 + 单行卡把高度压下去）。 */
+  #zcode-swarm-board { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; animation: zb-card-in 0.3s ease-out; }
+  #zcode-swarm-board [hidden] { display: none !important; }
+  #zcode-swarm-board * { box-sizing: border-box; }
+
+  /* ── 头部：标题一行，右侧状态胶囊 ── */
+  #zcode-swarm-board .zb-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #zcode-swarm-board .zb-head h3 { margin: 0; font-size: 14px; letter-spacing: 0.2px; white-space: nowrap; }
+  #zcode-swarm-board .zb-runid { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted-foreground, inherit); flex: 1 1 auto; }
+  #zcode-swarm-board .zb-badge { display: inline-flex; align-items: center; gap: 5px; padding: 1px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 500; border: 1px solid var(--border, transparent); background: var(--muted); color: var(--muted-foreground, inherit); white-space: nowrap; }
+  #zcode-swarm-board .zb-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+  #zcode-swarm-board .zb-badge[data-run="running"] { color: var(--blue, var(--primary)); }
+  #zcode-swarm-board .zb-badge[data-run="running"]::before { animation: zb-breath 2s ease-in-out infinite alternate; }
+  #zcode-swarm-board .zb-badge[data-run="completed"] { color: var(--green, var(--primary)); }
+  #zcode-swarm-board .zb-badge[data-run="failed"] { color: var(--red, var(--destructive)); }
+  #zcode-swarm-board .zb-badge[data-run="stopped"] { color: var(--yellow, var(--orange)); }
+  #zcode-swarm-board .zb-design { color: var(--purple, #8b5cf6); border-color: color-mix(in srgb, var(--purple, #8b5cf6) 45%, transparent); background: color-mix(in srgb, var(--purple, #8b5cf6) 10%, transparent); }
+  #zcode-swarm-board .zb-design::before { display: none; }
+
+  /* ── 结算比 + 阶段：大数字（等宽），一行看全局 ── */
+  #zcode-swarm-board .zb-score { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; animation: zb-fade-in 0.4s ease-out 0.06s both; }
+  #zcode-swarm-board .zb-nums { font: 700 26px/1 ui-monospace, SFMono-Regular, Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+  #zcode-swarm-board .zb-nums .zb-den { color: var(--muted-foreground, inherit); font-size: 15px; font-weight: 500; }
+  #zcode-swarm-board .zb-nums[data-all="true"] { color: var(--green, var(--primary)); }
+  #zcode-swarm-board .zb-nums[data-anyfail="true"] { color: var(--red, var(--destructive)); }
+  #zcode-swarm-board .zb-sub { font-size: 11.5px; color: var(--muted-foreground, inherit); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+  /* ── 分段进度条：CI 流水线式，每状态一段按卡数占比 ── */
+  #zcode-swarm-board .zb-segbar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--muted); gap: 2px; animation: zb-fade-in 0.4s ease-out 0.1s both; }
+  #zcode-swarm-board .zb-seg { height: 100%; min-width: 4px; border-radius: 2px; transform-origin: left center; animation: zb-seg-in 0.5s cubic-bezier(0.25, 1, 0.5, 1) both; }
+  #zcode-swarm-board .zb-seg[data-k="passed"] { background: var(--green, var(--primary)); }
+  #zcode-swarm-board .zb-seg[data-k="failed"] { background: var(--red, var(--destructive)); }
+  #zcode-swarm-board .zb-seg[data-k="rework"] { background: var(--yellow, var(--orange)); }
+  #zcode-swarm-board .zb-seg[data-k="working"], #zcode-swarm-board .zb-seg[data-k="reviewing"] { background: var(--blue, var(--primary)); }
+  #zcode-swarm-board .zb-seg[data-k="working"] { background-image: repeating-linear-gradient(115deg, transparent 0 5px, color-mix(in srgb, var(--background, #fff) 45%, transparent) 5px 8px); animation: zb-seg-in 0.5s cubic-bezier(0.25, 1, 0.5, 1) both, zb-flow 1.1s linear infinite; }
+  #zcode-swarm-board .zb-seg[data-k="reviewing"] { background-image: repeating-linear-gradient(115deg, transparent 0 5px, color-mix(in srgb, var(--background, #fff) 45%, transparent) 5px 8px); animation: zb-seg-in 0.5s cubic-bezier(0.25, 1, 0.5, 1) both, zb-flow 2.2s linear infinite; }
+  #zcode-swarm-board .zb-seg[data-k="pending"] { background: color-mix(in srgb, var(--muted-foreground, #999) 55%, transparent); }
+  #zcode-swarm-board .zb-legend { display: flex; flex-wrap: wrap; gap: 3px 12px; font-size: 11px; color: var(--muted-foreground, inherit); font-variant-numeric: tabular-nums; animation: zb-fade-in 0.4s ease-out 0.14s both; }
+  #zcode-swarm-board .zb-legend b { font-weight: 500; color: var(--foreground, inherit); }
+  #zcode-swarm-board .zb-dot { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 4px; vertical-align: 0; }
+
+  /* ── 任务卡网格：宽容器双列压高度，窄容器单列 ── */
+  #zcode-swarm-board .zb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 7px; }
+  #zcode-swarm-board .zb-row {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; align-items: center;
+    padding: 7px 9px; border-radius: 9px; border: 1px solid var(--border, transparent);
+    background: var(--muted); position: relative; overflow: hidden;
+    animation: zb-card-in 0.28s ease-out both;
+  }
+  #zcode-swarm-board .zb-row::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--muted-foreground, var(--border, transparent)); }
+  #zcode-swarm-board .zb-row[data-status="working"]::before, #zcode-swarm-board .zb-row[data-status="reviewing"]::before { background: var(--blue, var(--primary)); }
+  #zcode-swarm-board .zb-row[data-status="rework"]::before { background: var(--yellow, var(--orange)); }
+  #zcode-swarm-board .zb-row[data-status="passed"]::before { background: var(--green, var(--primary)); }
+  #zcode-swarm-board .zb-row[data-status="failed"]::before { background: var(--red, var(--destructive)); }
+  #zcode-swarm-board .zb-row[data-status="working"]::after {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: linear-gradient(to bottom, transparent, var(--blue, var(--primary)) 35%, var(--blue, var(--primary)) 65%, transparent);
+    animation: zb-border-flow 1.2s ease-in-out infinite alternate;
+  }
+  #zcode-swarm-board .zb-icon { grid-row: span 2; width: 17px; text-align: center; align-self: center; }
+  #zcode-swarm-board .zb-l1 { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  #zcode-swarm-board .zb-id { font: 600 11.5px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted-foreground, inherit); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+  #zcode-swarm-board .zb-title { font-weight: 500; font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #zcode-swarm-board .zb-state { flex: 0 0 auto; margin-left: auto; font-size: 10.5px; padding: 0 7px; border-radius: 999px; border: 1px solid color-mix(in srgb, currentColor 40%, transparent); background: color-mix(in srgb, currentColor 9%, transparent); }
+  #zcode-swarm-board .zb-row[data-status="pending"] .zb-state { color: var(--muted-foreground, inherit); }
+  #zcode-swarm-board .zb-row[data-status="working"] .zb-state, #zcode-swarm-board .zb-row[data-status="reviewing"] .zb-state { color: var(--blue, var(--primary)); }
+  #zcode-swarm-board .zb-row[data-status="rework"] .zb-state { color: var(--yellow, var(--orange)); }
+  #zcode-swarm-board .zb-row[data-status="passed"] .zb-state { color: var(--green, var(--primary)); }
+  #zcode-swarm-board .zb-row[data-status="failed"] .zb-state { color: var(--red, var(--destructive)); }
+  #zcode-swarm-board .zb-l2 { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 11px; color: var(--muted-foreground, inherit); font-variant-numeric: tabular-nums; }
+  #zcode-swarm-board .zb-role { flex: 0 0 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #zcode-swarm-board .zb-note-line { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #zcode-swarm-board .zb-rework-tag { flex: 0 0 auto; color: var(--yellow, var(--orange)); }
+  #zcode-swarm-board .zb-empty { margin: 0; color: var(--muted-foreground, inherit); font-size: 12px; }
+
+  /* ── 可点击行：整行按钮化 ── */
+  #zcode-swarm-board .zb-row { cursor: pointer; transition: border-color 0.15s ease, background-color 0.15s ease; }
+  #zcode-swarm-board .zb-row:hover { border-color: color-mix(in srgb, var(--blue, var(--primary)) 35%, var(--border, transparent)); }
+  #zcode-swarm-board .zb-row:focus-visible { outline: 2px solid var(--blue, var(--primary)); outline-offset: 1px; }
+  #zcode-swarm-board button.zb-row { font: inherit; color: inherit; text-align: left; width: 100%; padding: 7px 9px; }
+  #zcode-swarm-board .zb-caret { flex: 0 0 auto; margin-left: 4px; color: var(--muted-foreground, inherit); transition: transform 0.18s ease; align-self: center; }
+  #zcode-swarm-board .zb-row[data-open="true"] .zb-caret { transform: rotate(180deg); }
+  #zcode-swarm-board .zb-row[aria-expanded] .zb-l1 { padding-right: 2px; }
+
+  /* ── 详情区（展开时插入行下方，跨两列） ── */
+  #zcode-swarm-board .zb-detail { grid-column: 1 / -1; margin: 2px 4px 2px 17px; padding: 8px 10px; border-radius: 8px; border: 1px dashed var(--border, transparent); background: color-mix(in srgb, var(--muted-foreground, #999) 6%, transparent); display: grid; gap: 7px; animation: zb-detail-in 0.18s ease-out; }
+  #zcode-swarm-board .zb-detail:empty { display: none; }
+  #zcode-swarm-board .zb-dsec { display: grid; gap: 2px; }
+  #zcode-swarm-board .zb-dsec-title { margin: 0; font: 600 10.5px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 0.4px; color: var(--muted-foreground, inherit); text-transform: uppercase; }
+  #zcode-swarm-board .zb-dsec-text { margin: 0; font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 11em; }
+  #zcode-swarm-board .zb-dlist { margin: 0; padding-left: 15px; display: grid; gap: 1px; font-size: 11.5px; line-height: 1.55; overflow-wrap: anywhere; }
+  #zcode-swarm-board .zb-dmeta { font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted-foreground, inherit); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  @keyframes zb-detail-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ── 大视图模式：⛶ 切换，字号/间距/段条全面平滑放大（font-size 等可过渡属性） ── */
+  #zcode-swarm-board .zb-zoom { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border, transparent); background: var(--muted); color: var(--muted-foreground, inherit); cursor: pointer; padding: 0; transition: color 0.15s ease, border-color 0.15s ease; }
+  #zcode-swarm-board .zb-zoom:hover { color: var(--blue, var(--primary)); border-color: color-mix(in srgb, var(--blue, var(--primary)) 40%, transparent); }
+  #zcode-swarm-board .zb-zoom:focus-visible { outline: 2px solid var(--blue, var(--primary)); outline-offset: 1px; }
+  #zcode-swarm-board[data-zoom="true"] { gap: 14px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-head h3 { font-size: 17px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-runid { font-size: 12px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-badge { font-size: 13px; padding: 2px 12px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-nums { font-size: 38px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-nums .zb-den { font-size: 21px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-sub { font-size: 13px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-segbar { height: 9px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-legend { font-size: 13px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-legend b { font-size: 15px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-grid { grid-template-columns: minmax(0, 1fr); gap: 9px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-row { padding: 11px 13px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-title { font-size: 15px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-id { font-size: 13px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-state { font-size: 12.5px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-l2 { font-size: 13px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-icon { width: 22px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-icon svg { width: 18px; height: 18px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-spinner { width: 19px; height: 19px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-scan { width: 19px; height: 19px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-summary { font-size: 12.5px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-detail .zb-dsec-text, #zcode-swarm-board[data-zoom="true"] .zb-detail .zb-dlist { font-size: 13px; }
+  #zcode-swarm-board[data-zoom="true"] .zb-warn summary, #zcode-swarm-board[data-zoom="true"] .zb-warn li { font-size: 13px; }
+  #zcode-swarm-board h3, #zcode-swarm-board .zb-nums, #zcode-swarm-board .zb-title, #zcode-swarm-board .zb-segbar, #zcode-swarm-board .zb-row, #zcode-swarm-board .zb-grid { transition: font-size 0.25s ease, gap 0.25s ease, padding 0.25s ease, height 0.25s ease; }
+
+  /* ── 等你处理：原生 details 折叠，不占常驻高度 ── */
+  #zcode-swarm-board .zb-warn { border-radius: 9px; border: 1px solid color-mix(in srgb, var(--yellow, var(--orange)) 45%, transparent); background: color-mix(in srgb, var(--yellow, var(--orange)) 8%, transparent); animation: zb-fade-in 0.35s ease-out 0.18s both; }
+  #zcode-swarm-board .zb-warn summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 11.5px; font-weight: 500; color: var(--yellow, var(--orange)); user-select: none; }
+  #zcode-swarm-board .zb-warn summary::-webkit-details-marker { display: none; }
+  #zcode-swarm-board .zb-warn summary::before { content: "▸"; transition: transform 0.15s ease; }
+  #zcode-swarm-board .zb-warn[open] summary::before { transform: rotate(90deg); }
+  #zcode-swarm-board .zb-warn ul { margin: 0; padding: 0 10px 8px 26px; display: grid; gap: 2px; font-size: 11.5px; color: var(--foreground, inherit); }
+
+  /* ── 底部摘要：等宽小字一行 ── */
+  #zcode-swarm-board .zb-summary { margin: 0; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; color: var(--muted-foreground, inherit); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; animation: zb-fade-in 0.4s ease-out 0.2s both; }
+
+  /* ══════════ 状态动效（只用 transform + opacity） ══════════ */
+  @keyframes zb-spin { to { transform: rotate(360deg); } }
+  @keyframes zb-breath { from { opacity: 0.45; } to { opacity: 1; } }
+  @keyframes zb-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes zb-fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes zb-pop { 0% { transform: scale(0); opacity: 0; } 60% { transform: scale(1.25); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+  @keyframes zb-shake { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-2px); } 40% { transform: translateX(2px); } 60% { transform: translateX(-1px); } 80% { transform: translateX(1px); } }
+  @keyframes zb-pulse-ring { 0% { transform: scale(0.85); opacity: 0.8; } 100% { transform: scale(1.5); opacity: 0; } }
+  @keyframes zb-seg-in { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+  @keyframes zb-flow { to { background-position-x: 16px; } }
+  @keyframes zb-border-flow { from { transform: translateY(-30%); opacity: 0.4; } to { transform: translateY(30%); opacity: 1; } }
+
+  #zcode-swarm-board .zb-row[data-status="pending"] .zb-icon { animation: zb-breath 2.5s ease-in-out infinite alternate; }
+  #zcode-swarm-board .zb-spinner { display: inline-block; width: 15px; height: 15px; position: relative; vertical-align: text-bottom; }
+  #zcode-swarm-board .zb-spinner i { position: absolute; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+  #zcode-swarm-board .zb-spinner i:nth-child(1) { top: 0; left: 50%; margin-left: -2px; opacity: 1; }
+  #zcode-swarm-board .zb-spinner i:nth-child(2) { top: 50%; right: 1px; margin-top: -2px; opacity: 0.7; }
+  #zcode-swarm-board .zb-spinner i:nth-child(3) { bottom: 0; left: 50%; margin-left: -2px; opacity: 0.45; }
+  #zcode-swarm-board .zb-spinner i:nth-child(4) { top: 50%; left: 1px; margin-top: -2px; opacity: 0.2; }
+  #zcode-swarm-board .zb-spinner { animation: zb-spin 0.8s linear infinite; }
+  #zcode-swarm-board .zb-row[data-status="working"] .zb-icon { color: var(--blue, var(--primary)); }
+  #zcode-swarm-board .zb-scan { display: inline-block; width: 15px; height: 15px; position: relative; vertical-align: text-bottom; }
+  #zcode-swarm-board .zb-scan svg { display: block; }
+  #zcode-swarm-board .zb-scan::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid currentColor; animation: zb-pulse-ring 1.4s ease-out infinite; }
+  #zcode-swarm-board .zb-row[data-status="reviewing"] .zb-icon { color: var(--blue, var(--primary)); }
+  #zcode-swarm-board .zb-row[data-status="rework"] .zb-icon { animation: zb-spin 1.5s ease-in-out infinite; color: var(--yellow, var(--orange)); }
+  #zcode-swarm-board .zb-row[data-status="passed"] .zb-icon { animation: zb-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both; color: var(--green, var(--primary)); }
+  #zcode-swarm-board .zb-row[data-status="failed"] .zb-icon { animation: zb-shake 0.4s ease-in-out 1, zb-pop 0.3s ease-out both; color: var(--red, var(--destructive)); }
+
+  @media (prefers-reduced-motion: reduce) {
+    #zcode-swarm-board *, #zcode-swarm-board *::before, #zcode-swarm-board *::after { animation-duration: 0.01s !important; animation-iteration-count: 1 !important; }
+  }
+</style>
+<div class="zb-head">
+  <h3>团队任务看板</h3>
+  <span class="zb-runid" id="zb-runid"></span>
+  <button class="zb-zoom" id="zb-zoom" type="button" aria-pressed="false" title="切换大视图"><svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 1.5H12.5V5.5M5.5 12.5H1.5V8.5M12.5 1.5L8.5 5.5M1.5 12.5L5.5 8.5"/></svg></button>
+  <span class="zb-badge zb-design" id="zb-design" hidden><svg viewBox="0 0 14 14" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" style="vertical-align:-1px"><path d="M2 12L7 2l5 10H2z"/></svg> 设计文档</span>
+  <span class="zb-badge" id="zb-run" data-run="running" hidden>运行中</span>
+</div>
+<div class="zb-score">
+  <span class="zb-nums" id="zb-nums">–</span>
+  <span class="zb-sub" id="zb-sub"></span>
+</div>
+<div class="zb-segbar" id="zb-segbar" role="img" aria-label="任务状态分布"></div>
+<div class="zb-legend" id="zb-legend"></div>
+<details class="zb-warn" id="zb-findings" hidden>
+  <summary><span id="zb-findings-count"></span></summary>
+  <ul id="zb-findings-list"></ul>
+</details>
+<div class="zb-grid" id="zb-cards"><p class="zb-empty">载入中…</p></div>
+<p class="zb-summary" id="zb-summary" role="status"></p>
+<script>
+(function () {
+  /* root 定位优先从脚本自身向上找（脚本在 root div 内部）——彻底免疫同文档多卡片/重复 id：
+     getElementById 在宿主把多张 ::visualize 卡片渲染进同一文档时会命中更早的旧卡片，
+     旧卡片没有新元素，后续对 null 赋值直接把整卡脚本崩掉。 */
+  var root = (function () {
+    var sc = document.currentScript;
+    for (var n = sc && sc.parentNode; n; n = n.parentNode) {
+      if (n.id === "zcode-swarm-board") return n;
+    }
+    return document.getElementById("zcode-swarm-board");
+  })();
+  var DATA = /*@@DATA@@*/null/*@@END@@*/;
+
+  var $ = function (id) { return root ? root.querySelector("#" + id) : null; };
+  function need(el, name) { if (!el) throw new Error("卡片骨架缺 #" + name + "（宿主可能清洗了结构）"); return el; }
+  function cut(v, n) { var s = String(v == null ? "" : v); return s.length > n ? s.slice(0, n) + "…" : s; }
+  function pick(o, keys) { if (!o) return ""; for (var i = 0; i < keys.length; i++) { var v = o[keys[i]]; if (v !== undefined && v !== null && v !== "") return v; } return ""; }
+  /* 全部节点用 DOM API + textContent 构建——无可信内容进 innerHTML，无转义负担 */
+  function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  function svgIcon(size, sw, paths) {
+    var s = document.createElementNS(SVG_NS, "svg");
+    s.setAttribute("viewBox", "0 0 14 14"); s.setAttribute("width", size); s.setAttribute("height", size);
+    s.setAttribute("fill", "none"); s.setAttribute("stroke", "currentColor");
+    s.setAttribute("stroke-width", sw); s.setAttribute("stroke-linecap", "round"); s.setAttribute("stroke-linejoin", "round");
+    paths.forEach(function (p) { var e = document.createElementNS(SVG_NS, p[0]); for (var k in p[1]) e.setAttribute(k, p[1][k]); s.appendChild(e); });
+    return s;
+  }
+  var ICON_SVG = {
+    pending: function () { return svgIcon(14, 1.5, [["circle", { cx: 7, cy: 7, r: 5.5 }], ["path", { d: "M7 4v3l2.5 2.5" }]]); },
+    rework: function () { return svgIcon(14, 1.5, [["path", { d: "M12 7a5 5 0 1 1-1.5-3.5" }], ["path", { d: "M12 1v3h-3" }]]); },
+    passed: function () { return svgIcon(14, 2, [["path", { d: "M2.5 7.5l3 3 6-7" }]]); },
+    failed: function () { return svgIcon(14, 2, [["path", { d: "M3 3l8 8M11 3l-8 8" }]]); }
+  };
+  function iconOf(st) {
+    if (st === "working") {
+      var w = el("span", "zb-spinner"); w.setAttribute("aria-hidden", "true");
+      w.appendChild(el("i")); w.appendChild(el("i")); w.appendChild(el("i")); w.appendChild(el("i"));
+      return w;
+    }
+    if (st === "reviewing") {
+      var r = el("span", "zb-scan"); r.setAttribute("aria-hidden", "true");
+      r.appendChild(svgIcon(13, 1.5, [["circle", { cx: 6, cy: 6, r: 4 }], ["path", { d: "M9.5 9.5L13 13" }]]));
+      return r;
+    }
+    return (ICON_SVG[st] || ICON_SVG.pending)();
+  }
+
+  var STATE_LABEL = { pending: "待开工", working: "施工中", reviewing: "审查中", rework: "返工中", passed: "已通过", failed: "未通过" };
+  var STAGES = {
+    pending: "pending", "待开工": "pending", "待施工": "pending", queued: "pending", wait: "pending",
+    working: "working", building: "working", "施工中": "working",
+    reviewing: "reviewing", review: "reviewing", "审查中": "reviewing",
+    rework: "rework", reworking: "rework", "返工中": "rework", "返工": "rework",
+    passed: "passed", pass: "passed", ok: "passed", "通过": "passed", "已通过": "passed",
+    failed: "failed", fail: "failed", error: "failed", "未通过": "failed"
+  };
+  function normStatus(v) { return STAGES[String(v == null ? "" : v).trim().toLowerCase()] || "pending"; }
+
+  var RUNS = {
+    running: "running", run: "running", "运行中": "running", "进行中": "running",
+    completed: "completed", complete: "completed", done: "completed", "已完成": "completed", "完成": "completed",
+    failed: "failed", fail: "failed", error: "failed", "失败": "failed",
+    stopped: "stopped", stop: "stopped", cancelled: "stopped", "已停止": "stopped",
+    pending: "pending", "待启动": "pending"
+  };
+  var RUN_LABEL = { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止", pending: "待启动" };
+  var GATES = {
+    passed: "passed", pass: "passed", "通过": "passed", ok: "passed", success: "passed",
+    failed: "failed", fail: "failed", "未通过": "failed", error: "failed",
+    running: "running", "运行中": "running",
+    pending: "pending", "待运行": "pending", waiting: "pending",
+    not_run: "not_run", notrun: "not_run", skipped: "not_run", "未运行": "not_run", none: "not_run", off: "not_run"
+  };
+  var SEG_COLORS = { passed: "var(--green, var(--primary))", failed: "var(--red, var(--destructive))", rework: "var(--yellow, var(--orange))", working: "var(--blue, var(--primary))", reviewing: "var(--blue, var(--primary))", pending: "var(--muted-foreground, #999)" };
+
+  function findingText(f) {
+    if (f === null || f === undefined) return "";
+    if (typeof f === "string") return f;
+    var what = pick(f, ["what", "message", "note", "text", "title", "summary"]) || "未说明";
+    var where = pick(f, ["where", "card", "card_id", "scope"]);
+    var status = pick(f, ["status"]);
+    var st = status === "verified" ? "已核实" : status === "unconfirmed" ? "待核实" : status;
+    var suffix = [where, st].filter(Boolean).join(" · ");
+    return what + (suffix ? "（" + suffix + "）" : "");
+  }
+
+  function toMs(v) {
+    if (typeof v === "number" && isFinite(v) && v > 0) return v;
+    if (typeof v === "string") { var n = Number(v); if (isFinite(n) && n > 0) return n; var t = Date.parse(v); if (!isNaN(t)) return t; }
+    return 0;
+  }
+  function fmtDur(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60) return s + " 秒";
+    var m = Math.floor(s / 60); s %= 60;
+    if (m < 60) return m + " 分 " + s + " 秒";
+    var h = Math.floor(m / 60); m %= 60;
+    return h + " 时 " + m + " 分";
+  }
+  function elapsedText(run, d) {
+    var ms = pick(run, ["elapsed_ms", "elapsedMs", "elapsed"]) || pick(d || {}, ["elapsed", "elapsed_ms", "elapsedMs"]);
+    if (typeof ms === "number" && isFinite(ms) && ms >= 0) return fmtDur(ms);
+    if (typeof ms === "string" && ms) { var n = Number(ms); if (isFinite(n) && n >= 0) return fmtDur(n); return (ms === "n/a" || ms === "-") ? "" : ms; }
+    var start = toMs(pick(run, ["started_at", "startedAt", "start", "start_time"]));
+    var end = toMs(pick(run, ["updated_at", "updatedAt", "end", "end_time"])) || Date.now();
+    if (start && end >= start) return fmtDur(end - start);
+    return "";
+  }
+  function gateSummary(gate, raw) {
+    if (!gate) return "无验证命令";
+    var g = GATES[String(raw == null ? "" : raw).trim().toLowerCase()];
+    if (g === "passed") return "gate 通过";
+    if (g === "failed") return "gate 未通过";
+    if (g === "running") return "gate 运行中";
+    if (g === "not_run") return "gate 未运行";
+    if (g === "pending") return "gate 待运行";
+    return raw ? "gate：" + cut(String(raw), 40) : "gate 待运行";
+  }
+
+  /* 展开状态：同一次渲染实例内保留（宿主重新加载新卡片文件时自然复位） */
+  var expanded = Object.create(null);
+
+  function iconCaret() { return svgIcon(14, 1.8, [["path", { d: "M5 6l2.5 2.5L10 6" }]]); }
+
+  /** 详情分组：标题 + 文本/列表；全部 textContent。 */
+  function dsec(title, items, opts) {
+    var list = Array.isArray(items) ? items.filter(function (x) { return x != null && String(x).trim() !== ""; }) : [];
+    if (!list.length) return null;
+    var box = el("div", "zb-dsec");
+    box.appendChild(el("h6", "zb-dsec-title", title));
+    if (opts && opts.text) { box.appendChild(el("p", "zb-dsec-text", String(list[0]))); return box; }
+    var ul = el("ul", "zb-dlist");
+    list.forEach(function (item) { ul.appendChild(el("li", null, String(item))); });
+    box.appendChild(ul);
+    return box;
+  }
+
+  /** 卡片详情：容错消费 buildBoardData 的详情字段（有则显示，无则跳过）。 */
+  function stateLabelSt(st) { return STATE_LABEL[st] || st; }
+  function detailNode(card) {
+    var box = el("div", "zb-detail");
+    var role = pick(card, ["role"]);
+    var st = normStatus(pick(card, ["status", "stage", "state"]));
+    var rework = Number(pick(card, ["rework", "reworks", "rework_rounds", "reworkRounds", "rounds", "round"]) || 0) || 0;
+    var noteFull = String(pick(card, ["note", "latest_note", "last_note", "summary", "detail", "comment"]) || "");
+    [
+      dsec("任务", [pick(card, ["task"])], { text: true }),
+      dsec("写入范围", card.scope ? [card.scope] : []),
+      dsec("验收标准", [pick(card, ["acceptance"])], { text: true }),
+      dsec("结果", [pick(card, ["summary"])], { text: true }),
+      dsec("检查项", Array.isArray(card.checks) ? card.checks.slice(0, 30).map(String) : []),
+      dsec("改动文件", Array.isArray(card.changed) ? card.changed.slice(0, 30).map(String) : []),
+      dsec("审查意见", Array.isArray(card.review_findings) ? card.review_findings.slice(0, 15).map(String) : []),
+      dsec("待处理", Array.isArray(card.open_items) ? card.open_items.slice(0, 15).map(String) : []),
+      dsec("错误", card.error ? [card.error] : [], { text: true })
+    ].forEach(function (sec) { if (sec) box.appendChild(sec); });
+    var metaBits = [];
+    var rp = pick(card, ["review_pass", "reviewPass"]);
+    if (rp === true) metaBits.push("审查通过");
+    if (rp === false) metaBits.push("审查未通过");
+    var bn = Number(pick(card, ["bounces"]) || 0); if (bn > 0) metaBits.push("打回 " + bn + " 批");
+    var sp = Number(pick(card, ["spawns"]) || 0); if (sp > 0) metaBits.push("扩编 " + sp + " 张");
+    var launched = pick(card, ["launched_at", "launchedAt"]); if (launched) metaBits.push("开始 " + launched);
+    var completed = pick(card, ["completed_at", "completedAt"]); if (completed) metaBits.push("完成 " + completed);
+    if (metaBits.length) box.appendChild(el("div", "zb-dmeta", metaBits.join(" · ")));
+    if (box.childElementCount > 0) return box;
+    /* 兜底：结构化详情字段还没进数据（旧链路/过渡期）时，也保证卡片可点开看基本信息 */
+    var fallbackBits = [];
+    if (role) fallbackBits.push("角色：" + role);
+    if (st) fallbackBits.push("状态：" + (stateLabelSt(st)));
+    if (rework > 0) fallbackBits.push("返工 " + rework + " 轮");
+    if (noteFull) fallbackBits.push("摘要：" + noteFull);
+    if (!fallbackBits.length) return null;
+    box.appendChild(el("div", "zb-dmeta", fallbackBits.join(" · ")));
+    return box;
+  }
+
+  function cardNode(card, idx) {
+    var st = normStatus(pick(card, ["status", "stage", "state"]));
+    var key = String(pick(card, ["id", "no", "num"]) || pick(card, ["title", "name"]) || idx);
+    var id = pick(card, ["id", "no", "num"]) || "?";
+    var title = pick(card, ["title", "name"]) || "(无标题)";
+    var role = pick(card, ["role"]);
+    var rework = Number(pick(card, ["rework", "reworks", "rework_rounds", "reworkRounds", "rounds", "round"]) || 0) || 0;
+    var note = String(pick(card, ["note", "latest_note", "last_note", "summary", "detail", "comment"]) || "");
+    var rawLabel = String(pick(card, ["state_label", "stateLabel"]) || "");
+    var stateLabel = rawLabel.trim() ? rawLabel : (STATE_LABEL[st] || "");
+    var hasDetail = Boolean(detailNode(card));
+
+    var row = document.createElement("button");
+    row.type = "button";
+    row.className = "zb-row";
+    row.setAttribute("data-status", st);
+    row.style.animationDelay = (0.08 + Math.min(idx, 12) * 0.045) + "s";
+    var isOpen = Boolean(expanded[key]);
+    if (isOpen) row.setAttribute("data-open", "true");
+    row.setAttribute("aria-expanded", isOpen ? "true" : "false");
+
+    var icon = el("span", "zb-icon");
+    icon.setAttribute("role", "img");
+    icon.setAttribute("aria-label", STATE_LABEL[st] || "状态");
+    icon.appendChild(iconOf(st));
+
+    var l1 = el("div", "zb-l1");
+    l1.appendChild(el("span", "zb-id", "#" + id));
+    var t = el("span", "zb-title", cut(title, 60));
+    if (String(title).length > 60) t.setAttribute("title", title);
+    l1.appendChild(t);
+    l1.appendChild(el("span", "zb-state", stateLabel));
+    if (hasDetail) { var c = el("span", "zb-caret"); c.setAttribute("aria-hidden", "true"); c.appendChild(iconCaret()); l1.appendChild(c); }
+
+    var l2 = el("div", "zb-l2");
+    if (role) l2.appendChild(el("span", "zb-role", cut(role, 20)));
+    if (rework > 0) l2.appendChild(el("span", "zb-rework-tag", "↻" + rework));
+    if (note) {
+      var nl = el("span", "zb-note-line", cut(note, 90));
+      nl.setAttribute("title", note);
+      l2.appendChild(nl);
+    }
+
+    var main = el("div");
+    main.style.setProperty("display", "grid");
+    main.style.setProperty("gap", "1px");
+    main.appendChild(l1); main.appendChild(l2);
+
+    row.appendChild(icon);
+    row.appendChild(main);
+
+    if (hasDetail) {
+      row.addEventListener("click", function () {
+        var now = !expanded[key];
+        if (now) expanded[key] = true; else delete expanded[key];
+        var fresh = cardNode(card, idx);
+        var detail = detailNode(card);
+        /* 展开态：详情插到这行后面（网格内跨列）；收起态：只还原行本身 */
+        if (now && detail) {
+          var cell = el("div", "zb-cell");
+          cell.style.setProperty("grid-column", "1 / -1");
+          cell.appendChild(fresh);
+          cell.appendChild(detail);
+          row.parentNode.replaceChild(cell, row);
+        } else if (row.parentNode && row.parentNode.classList.contains("zb-cell")) {
+          row.parentNode.parentNode.replaceChild(fresh, row.parentNode);
+        } else {
+          row.parentNode.replaceChild(fresh, row);
+        }
+      });
+    } else {
+      row.style.cursor = "default";
+      row.setAttribute("aria-expanded", "false");
+    }
+    return row;
+  }
+
+  var GRID_GAP_HACK = 0; /* 保留占位，避免下方锚点误删 */
+
+  function render() {
+    var d = DATA || {};
+    var run = d.run || {};
+    var runStatus = RUNS[String(pick(run, ["status", "state"]) || pick(d, ["status", "state"])).trim().toLowerCase()] || "";
+    var badge = need($("zb-run"), "zb-run");
+    if (runStatus) {
+      badge.hidden = false;
+      badge.setAttribute("data-run", runStatus);
+      badge.textContent = RUN_LABEL[runStatus] || runStatus;
+    } else badge.hidden = true;
+    var runId = String(pick(run, ["run_id", "runId", "id"]) || "");
+    var runidEl = $("zb-runid"); if (runidEl) runidEl.textContent = runId ? runId : "";
+
+    var cards = d.cards || [];
+    /* 计数：优先数据自带 counts（与面板同源），缺了再现场数 */
+    var counts = { passed: 0, failed: 0, working: 0, reviewing: 0, rework: 0, pending: 0 };
+    var rawCounts = d.counts && typeof d.counts === "object" ? d.counts : null;
+    var hasCounts = false;
+    for (var k in counts) { var v = rawCounts ? Number(rawCounts[k]) : NaN; if (isFinite(v) && v >= 0) { counts[k] = v; hasCounts = true; } }
+    if (!hasCounts) cards.forEach(function (c) { counts[normStatus(pick(c, ["status", "stage", "state"]))] += 1; });
+    var total = cards.length || (counts.passed + counts.failed + counts.working + counts.reviewing + counts.rework + counts.pending);
+
+    /* 结算比大数字 */
+    var nums = $("zb-nums"); if (!nums) nums = { textContent: "", appendChild: function () {}, setAttribute: function () {} };
+    nums.textContent = "";
+    nums.appendChild(document.createTextNode(String(counts.passed + counts.failed)));
+    var den = el("span", "zb-den", "/" + total);
+    nums.appendChild(den);
+    nums.setAttribute("data-all", total > 0 && counts.passed === total ? "true" : "false");
+    nums.setAttribute("data-anyfail", counts.failed > 0 ? "true" : "false");
+
+    /* 副行：运行阶段提示 + gate */
+    var gateObj = d.gate && typeof d.gate === "object" ? d.gate : null;
+    var gateCmd = gateObj ? String(pick(gateObj, ["command", "cmd", "gate"]) || "") : String(d.gate || "");
+    var gateRaw = d.gate_status || d.gateStatus || (gateObj ? pick(gateObj, ["status", "state"]) : "");
+    var dur = elapsedText(run, d);
+    var subBits = [];
+    var openN = counts.working + counts.reviewing + counts.rework + counts.pending;
+    if (runStatus === "running" && openN > 0) {
+      if (counts.working + counts.rework > 0) subBits.push("施工中 " + (counts.working + counts.rework));
+      else if (counts.reviewing > 0) subBits.push("审查中 " + counts.reviewing);
+      else subBits.push("待派工 " + counts.pending);
+    }
+    subBits.push(gateSummary(gateCmd, gateRaw));
+    if (dur) subBits.push(dur);
+    $("zb-sub").textContent = subBits.join(" · ");
+
+    /* 分段条 + 图例 */
+    var segbar = $("zb-segbar"); if (!segbar) segbar = { textContent: "", appendChild: function () {} };
+    var legend = $("zb-legend"); if (!legend) legend = { textContent: "", appendChild: function () {} };
+    segbar.textContent = ""; legend.textContent = "";
+    var order = ["passed", "working", "reviewing", "rework", "pending", "failed"];
+    order.forEach(function (k, i) {
+      if (counts[k] > 0) {
+        var seg = el("span", "zb-seg");
+        seg.setAttribute("data-k", k);
+        seg.style.flexGrow = String(counts[k]);
+        seg.style.animationDelay = (0.1 + i * 0.06) + "s";
+        if (k === "working" || k === "reviewing") seg.style.backgroundSize = "16px 100%";
+        segbar.appendChild(seg);
+        var li = el("span");
+        var dot = el("i", "zb-dot");
+        dot.style.background = SEG_COLORS[k];
+        li.appendChild(dot);
+        li.appendChild(document.createTextNode(STATE_LABEL[k] + " "));
+        li.appendChild(el("b", null, String(counts[k])));
+        legend.appendChild(li);
+      }
+    });
+
+    /* 卡片网格 */
+    var grid = $("zb-cards"); if (!grid) grid = { textContent: "", appendChild: function () {} };
+    grid.textContent = "";
+    if (cards.length) cards.forEach(function (c, i) { grid.appendChild(cardNode(c, i)); });
+    else grid.appendChild(el("p", "zb-empty", "暂无看板数据"));
+
+    /* 设计文档徽标 */
+    var designMd = pick(d, ["design_md", "designMd", "design"]);
+    $("zb-design").hidden = !String(designMd || "").trim();
+
+    /* 等你处理（原生折叠） */
+    var findings = d.findings || [];
+    var fCount = findings.length || Number(pick(d, ["findings_count", "findingsCount", "finding_count"]) || 0) || 0;
+    var bar = $("zb-findings");
+    if (fCount) {
+      bar.hidden = false;
+      $("zb-findings-count").textContent = "等你处理 " + fCount + " 项";
+      var ul = $("zb-findings-list");
+      ul.textContent = "";
+      if (findings.length) findings.forEach(function (f) { ul.appendChild(el("li", null, cut(findingText(f), 120))); });
+      else ul.appendChild(el("li", null, "详情见最终施工报告"));
+    } else bar.hidden = true;
+
+    /* 底部摘要（等宽小字） */
+    var parts = [];
+    if (total) parts.push("已结算 " + (counts.passed + counts.failed) + "/" + total);
+    if (gateCmd) parts.push("$ " + cut(gateCmd, 48));
+    var artifactDir = String(pick(d, ["artifact_dir", "artifactDir", "artifacts_dir", "artifactsDir"]) || "");
+    if (artifactDir) parts.push("产物已归档");
+    var summaryEl = $("zb-summary");
+    summaryEl.textContent = parts.join("  ·  ") || "等待数据";
+    if (artifactDir) summaryEl.setAttribute("title", "产物目录：" + artifactDir);
+    else summaryEl.removeAttribute("title");
+  }
+
+  /* 侧栏看板按钮：尝试经宿主桥唤起「团队看板」面板；桥不可用则降级为文字提示。
+     宿主对聊天卡片提供的桥方法名未公开，这里对 MCP-Apps 常见方法名逐一尝试。 */
+  /* 大视图切换：data-zoom 驱动 CSS 过渡（字号/间距/段条平滑放大） */
+  var zoomBtn = $("zb-zoom"); /* 可选元素：被清洗也不影响主渲染 */
+  if (zoomBtn) {
+    zoomBtn.addEventListener("click", function () {
+      var on = root.getAttribute("data-zoom") === "true";
+      if (on) root.removeAttribute("data-zoom"); else root.setAttribute("data-zoom", "true");
+      zoomBtn.setAttribute("aria-pressed", on ? "false" : "true");
+    });
+  }
+
+  try {
+    render();
+  } catch (err) {
+    /* 宿主环境异常不再静默白卡：把崩因显示在卡片里，一眼可诊断 */
+    try {
+      var errBox = document.createElement("p");
+      errBox.className = "zb-summary";
+      errBox.style.color = "var(--red, var(--destructive))"
+      errBox.textContent = "看板渲染异常：" + (err && err.message ? err.message : err);
+      (root || document.body).appendChild(errBox);
+    } catch (e2) { /* 连兜底都失败就随它去 */ }
+  }
+})();
+</script>
+</div>

@@ -1,0 +1,66 @@
+{
+  "name": "zcode-swarm",
+  "version": "0.4.5",
+  "description": "Team development for ZCode (v2.0): the main session orchestrates directly via the Agent tool — one requirement splits into task cards, background builders run in parallel with per-card independent review, rework, dynamic expansion and gate verification; state lives in .swarm/ledger.json, progress on Gen UI cards and a persistent side-panel team board (swarm_board). Models are decided by ZCode Settings → Subagents (ZCode Swarm); the plugin does not configure models. No workflow-engine launch step: send /swarm <requirement>.",
+  "description_i18n": {
+    "en": "Team development for ZCode (v2.0): the main session orchestrates directly via the Agent tool — one requirement splits into task cards, background builders run in parallel with per-card independent review, rework, dynamic expansion and gate verification; state lives in .swarm/ledger.json, progress on Gen UI cards and a persistent side-panel team board (swarm_board). Models are decided by ZCode Settings → Subagents (ZCode Swarm); the plugin does not configure models. No workflow-engine launch step: send /swarm <requirement>.",
+    "zh-CN": "ZCode 团队开发（v2.0）：主会话直接编排 —— 需求拆成任务卡，后台施工员并行施工、逐卡独立审查、按意见返工、动态扩编、整体验证；状态记在 .swarm/ledger.json，进度看 Gen UI 卡片与常驻侧栏团队看板（swarm_board）。模型由 ZCode 设置 → 子智能体 → ZCode Swarm 决定，插件不再配置模型。发 /swarm <需求> 即开工。"
+  },
+  "author": {
+    "name": "aa"
+  },
+  "license": "MIT",
+  "keywords": [
+    "swarm",
+    "subagents",
+    "parallel",
+    "team",
+    "workflow",
+    "review",
+    "board"
+  ],
+  "skills": "./skills",
+  "commands": "./commands",
+  "hooks": "./hooks",
+  "mcpServers": {
+    "swarm-board": {
+      "type": "stdio",
+      "command": "E:\\Agent\\Zcode\\ZCode.exe",
+      "args": [
+        "E:\\Agent\\Zcode\\resources\\glm\\zcode.cjs",
+        "__zcode-plugin-host",
+        "${ZCODE_PLUGIN_ROOT}/scripts/swarm-board-server.mjs"
+      ],
+      "cwd": "${ZCODE_PROJECT_DIR}",
+      "env": {
+        "ZCODE_WORKSPACE_ROOT": "${ZCODE_PROJECT_DIR}",
+        "ELECTRON_RUN_AS_NODE": "1",
+        "ZCODE_PLUGIN_ID": "zcode-swarm@zcode-swarm-market"
+      },
+      "isolation": "workspace"
+    }
+  },
+  "ui": {
+    "surfaces": [
+      {
+        "id": "swarm-board",
+        "title": {
+          "zh-CN": "团队看板",
+          "en-US": "Swarm Board"
+        },
+        "icon": "layout-dashboard",
+        "server": "swarm-board",
+        "resourceUri": "ui://zcode-swarm/panel.html",
+        "availability": "session"
+      }
+    ]
+  },
+  "userConfig": {
+    "reworkRounds": {
+      "type": "number",
+      "title": "Rework rounds",
+      "description": "审查 FAIL 后最多返工轮数，0-5（0 = 不返工，直接交人）。仅当项目没有专属名单时生效；脚本只读不改。",
+      "default": 2
+    }
+  }
+}

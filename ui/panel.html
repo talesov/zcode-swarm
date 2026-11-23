@@ -1,0 +1,1527 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>团队看板</title>
+<!--
+  团队看板面板（单文件自包含，无外链资源）。
+  由 swarm-board MCP 服务以 ui://zcode-swarm/panel.html 提供，宿主在侧栏加载。
+  数据源 ui://zcode-swarm/board.json；本页按三级降级拉取：
+    1) MCP 桥（父窗口 postMessage / window.zcode / window.mcp 等入口）→ 订阅 + 5s 兜底轮询
+    2) fetch("ui://zcode-swarm/board.json") → 2.5s 轮询（宿主可能拦 ui: 协议，拦到就直接失败）
+    3) 都不行 → 用服务端注入的首次数据静态渲染 + 手动刷新按钮
+  降级/断线后每 30s 静默重探测一次，桥一恢复就自动切回实时通道并收起黄条。
+  ledger 内容（标题/需求/备注/模型名等）一律经 textContent / 属性 API 写入 DOM，
+  全程无动态 innerHTML，从结构上没有 HTML 注入面。
+  视觉语言复用 templates/board-card.html：状态色系、描边 SVG 图标、只动 transform/opacity、
+  prefers-reduced-motion 时关闭动画。明暗主题默认跟随系统，宿主 hostContext.theme 可覆盖。
+  布局：卡片区 min-height 兜底 + 自身滚动；≥700px 两列、≥1100px 三列。
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --sb-bg: #ffffff;
+    --sb-panel: #f7f8fa;
+    --sb-fg: #1f2328;
+    --sb-subtle: #6a7280;
+    --sb-border: #e2e5e9;
+    --sb-muted: #f3f4f6;
+    --sb-blue: #2563eb;
+    --sb-green: #15803d;
+    --sb-red: #c02626;
+    --sb-yellow: #b45309;
+    --sb-purple: #7c3aed;
+    --sb-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+  }
+  /*
+    双主题：默认跟随系统；宿主通过 ui/initialize 的 hostContext.theme 或
+    ui/notifications/host-context-changed 明确指定 light/dark 时，以宿主为准
+    （[data-sb-theme="light"] 会从系统深色分支里排除掉）。
+  */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-sb-theme="light"]) {
+      --sb-bg: #1b1b1f;
+      --sb-panel: #202024;
+      --sb-fg: #e7e8ea;
+      --sb-subtle: #9aa0a6;
+      --sb-border: #33343a;
+      --sb-muted: #26272c;
+      --sb-blue: #7aa7ff;
+      --sb-green: #4ade80;
+      --sb-red: #f87171;
+      --sb-yellow: #fbbf24;
+      --sb-purple: #c4b5fd;
+      --sb-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+    }
+  }
+  :root[data-sb-theme="dark"] {
+    color-scheme: dark;
+    --sb-bg: #1b1b1f;
+    --sb-panel: #202024;
+    --sb-fg: #e7e8ea;
+    --sb-subtle: #9aa0a6;
+    --sb-border: #33343a;
+    --sb-muted: #26272c;
+    --sb-blue: #7aa7ff;
+    --sb-green: #4ade80;
+    --sb-red: #f87171;
+    --sb-yellow: #fbbf24;
+    --sb-purple: #c4b5fd;
+    --sb-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  }
+  :root[data-sb-theme="light"] { color-scheme: light; }
+
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--sb-bg);
+    color: var(--sb-fg);
+    font: 13px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    /* 宿主 iframe 比面板最小可用高度还矮时，允许整页滚动而不是把底栏裁掉 */
+    overflow-y: auto;
+  }
+  * { box-sizing: border-box; }
+  /* 作者样式里的 display:inline-flex 会压过 UA 的 [hidden]，这里显式兜底 */
+  [hidden] { display: none !important; }
+
+  /* 顶栏 + 卡片区 + 底栏：卡片区自己滚动，顶/底栏固定。
+     min-height 是布局兜底：宿主 iframe 高度受限/auto 时也不能把卡片区压成一条缝，
+     不够高就让整页（body）滚动。 */
+  .sb-shell { height: 100%; min-height: 360px; display: flex; flex-direction: column; }
+
+  .sb-top {
+    flex: 0 0 auto;
+    display: grid;
+    gap: 6px;
+    padding: 12px 12px 10px;
+    border-bottom: 1px solid var(--sb-border);
+    background: var(--sb-panel);
+  }
+  .sb-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .sb-logo { flex: 0 0 auto; color: var(--sb-blue); }
+  .sb-title { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.2px; white-space: nowrap; }
+  .sb-runid {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    color: var(--sb-subtle);
+  }
+  .sb-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .sb-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--sb-border);
+    background: var(--sb-muted);
+    color: var(--sb-subtle);
+    font-size: 11.5px;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+  .sb-badge::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: 0 0 auto;
+  }
+  .sb-badge[data-run="running"] { color: var(--sb-blue); }
+  .sb-badge[data-run="running"]::before { animation: sb-breath 2s ease-in-out infinite alternate; }
+  .sb-badge[data-run="completed"] { color: var(--sb-green); }
+  .sb-badge[data-run="failed"] { color: var(--sb-red); }
+  .sb-badge[data-run="stopped"] { color: var(--sb-yellow); }
+  .sb-gate { overflow: hidden; text-overflow: ellipsis; }
+  .sb-gate[data-gate="pass"] { color: var(--sb-green); border-color: var(--sb-green); }
+  .sb-gate[data-gate="fail"] { color: var(--sb-red); border-color: var(--sb-red); }
+  .sb-req {
+    margin: 0;
+    color: var(--sb-subtle);
+    font-size: 12px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+
+  /* 黄条：数据读取/解析失败提示（不盖住上次画面） */
+  .sb-warn {
+    flex: 0 0 auto;
+    margin: 8px 12px 0;
+    padding: 7px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--sb-yellow);
+    border-left-width: 3px;
+    background: var(--sb-muted);
+    background: color-mix(in srgb, var(--sb-yellow) 12%, transparent);
+    color: var(--sb-yellow);
+    font-size: 12px;
+  }
+
+  /* 卡片列表 */
+  .sb-cards {
+    flex: 1 1 auto;
+    /* 关键兜底：只给 flex:1 时，宿主 iframe 高度被压小/按内容量高，卡片区会被压成一细条。
+       给一个可读的最小高度（flex 项不会缩到它以下），空间不够就让 body 整页滚动。 */
+    min-height: 220px;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 8px;
+    padding: 10px 12px 12px;
+  }
+  /* 宽视口利用：面板被拉宽后多列排卡，窄视口保持单列 */
+  @media (min-width: 700px) {
+    .sb-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (min-width: 1100px) {
+    .sb-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  /* 空态/错误态横跨所有列，居中显示 */
+  .sb-empty { grid-column: 1 / -1; }
+  .sb-card {
+    /* 卡片现在是「折叠行 + 详情」两段纵向堆叠（原来只有一个横向 flex 子项） */
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    padding: 9px 11px;
+    border: 1px solid var(--sb-border);
+    border-left-width: 3px;
+    border-radius: 8px;
+    background: var(--sb-panel);
+    box-shadow: var(--sb-shadow);
+    animation: sb-card-in 0.25s ease-out;
+    /* 窄卡（多列布局）也绝不横向溢出：长 id/长模型名就地换行 */
+    min-width: 0;
+  }
+  .sb-card[data-status="pending"] { border-left-color: var(--sb-subtle); }
+  .sb-card[data-status="working"] { border-left-color: var(--sb-blue); }
+  .sb-card[data-status="reviewing"] { border-left-color: var(--sb-blue); }
+  .sb-card[data-status="rework"] { border-left-color: var(--sb-yellow); }
+  .sb-card[data-status="passed"] { border-left-color: var(--sb-green); }
+  .sb-card[data-status="failed"] { border-left-color: var(--sb-red); }
+
+  /* ── 可展开卡片：折叠行是按钮，整行可点 ── */
+  .sb-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 6px;
+  }
+  .sb-row:focus-visible { outline: 2px solid var(--sb-blue); outline-offset: 2px; }
+  .sb-row > .sb-icon { align-self: flex-start; }
+  .sb-row > .sb-caret { align-self: flex-start; }
+  .sb-card-title { white-space: normal; }
+  .sb-caret {
+    flex: 0 0 auto;
+    align-self: center;
+    display: inline-flex;
+    color: var(--sb-subtle);
+    transition: transform 0.18s ease;
+  }
+  .sb-card[data-open="true"] .sb-caret { transform: rotate(180deg); }
+  .sb-hint { color: var(--sb-subtle); font-variant-numeric: tabular-nums; }
+
+  /* ── 详情区 ── */
+  .sb-detail {
+    margin-top: 9px;
+    padding-top: 9px;
+    border-top: 1px dashed var(--sb-border);
+    display: grid;
+    gap: 8px;
+    animation: sb-detail-in 0.18s ease-out;
+  }
+  .sb-dsec { display: grid; gap: 3px; }
+  .sb-dsec-title {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    color: var(--sb-subtle);
+  }
+  .sb-dsec-text {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--sb-fg);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    max-height: 12em;
+    overflow-y: auto;
+  }
+  .sb-dlist {
+    margin: 0;
+    padding-left: 16px;
+    display: grid;
+    gap: 2px;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--sb-fg);
+    overflow-wrap: anywhere;
+  }
+  .sb-dmeta {
+    font-size: 11.5px;
+    color: var(--sb-subtle);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  /* ── 进度条 + 阶段 ── */
+  .sb-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 12px 8px;
+  }
+  .sb-progress-bar {
+    flex: 1 1 auto;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--sb-muted);
+    overflow: hidden;
+    display: flex;
+  }
+  .sb-progress-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 3px;
+    background: var(--sb-blue);
+    transition: width 0.5s cubic-bezier(0.25, 1, 0.5, 1);
+  }
+  .sb-progress-fill[data-full="true"] { background: var(--sb-green); }
+  .sb-progress-num {
+    flex: 0 0 auto;
+    font-size: 11.5px;
+    color: var(--sb-subtle);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .sb-phase {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11.5px;
+    color: var(--sb-subtle);
+    white-space: nowrap;
+  }
+  .sb-phase[data-phase="done"] { color: var(--sb-green); }
+  .sb-phase[data-phase="gate"] { color: var(--sb-yellow); }
+  @keyframes sb-detail-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }
+  .sb-icon { flex: 0 0 auto; width: 18px; line-height: 1.5; text-align: center; }
+  .sb-main { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; grid-template-columns: minmax(0, 1fr); }
+  .sb-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .sb-id { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--sb-subtle); min-width: 0; overflow-wrap: anywhere; }
+  .sb-card-title { font-weight: 500; min-width: 0; overflow-wrap: break-word; word-break: normal; }
+  .sb-state { font-size: 11.5px; white-space: nowrap; }
+  .sb-card[data-status="pending"] .sb-state { color: var(--sb-subtle); }
+  .sb-card[data-status="working"] .sb-state,
+  .sb-card[data-status="reviewing"] .sb-state { color: var(--sb-blue); }
+  .sb-card[data-status="rework"] .sb-state { color: var(--sb-yellow); }
+  .sb-card[data-status="passed"] .sb-state { color: var(--sb-green); }
+  .sb-card[data-status="failed"] .sb-state { color: var(--sb-red); }
+  .sb-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 11.5px; color: var(--sb-subtle); min-width: 0; }
+  .sb-meta > span { min-width: 0; overflow-wrap: anywhere; }
+  .sb-rework { color: var(--sb-yellow); white-space: nowrap; }
+  .sb-note { font-size: 12px; color: var(--sb-subtle); overflow-wrap: anywhere; }
+
+  /* 空态 */
+  .sb-empty {
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    padding: 44px 16px;
+    text-align: center;
+    color: var(--sb-subtle);
+  }
+  .sb-empty-icon { color: var(--sb-subtle); opacity: 0.55; }
+  .sb-empty-title { margin: 4px 0 0; font-size: 13px; font-weight: 500; color: var(--sb-fg); }
+  .sb-empty-hint { margin: 0; font-size: 12px; }
+  .sb-empty-hint code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    background: var(--sb-muted);
+    border: 1px solid var(--sb-border);
+    border-radius: 4px;
+    padding: 0 4px;
+  }
+
+  /* 底栏：耗时 + 最后更新（左） / 数据源 + 手动刷新（右）。窄面板下自动换行 */
+  .sb-foot {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 4px 10px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    border-top: 1px solid var(--sb-border);
+    background: var(--sb-panel);
+    font-size: 11.5px;
+    color: var(--sb-subtle);
+  }
+  /* 底栏文本必须可在窄面板里折行，否则整页出现横向滚动条 */
+  .sb-foot > span { min-width: 0; overflow-wrap: anywhere; }
+  .sb-foot-right { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+  .sb-refresh {
+    font: inherit;
+    font-size: 11.5px;
+    color: var(--sb-fg);
+    background: var(--sb-muted);
+    border: 1px solid var(--sb-border);
+    border-radius: 6px;
+    padding: 2px 9px;
+    cursor: pointer;
+  }
+  .sb-refresh:active { transform: scale(0.97); }
+  .sb-refresh:disabled { opacity: 0.6; cursor: default; }
+
+  /* ══════════ 状态动效（只动 transform / opacity） ══════════ */
+  @keyframes sb-spin { to { transform: rotate(360deg); } }
+  @keyframes sb-breath { from { opacity: 0.45; } to { opacity: 1; } }
+  @keyframes sb-card-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes sb-pop { 0% { transform: scale(0); opacity: 0; } 60% { transform: scale(1.25); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+  @keyframes sb-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-2px); } 40% { transform: translateX(2px); } 60% { transform: translateX(-1px); } 80% { transform: translateX(1px); } }
+  @keyframes sb-pulse-ring { 0% { transform: scale(0.85); opacity: 0.8; } 100% { transform: scale(1.5); opacity: 0; } }
+  @keyframes sb-border-flow { from { transform: translateY(-30%); opacity: 0.4; } to { transform: translateY(30%); opacity: 1; } }
+
+  .sb-card[data-status="pending"] .sb-icon { animation: sb-breath 2.5s ease-in-out infinite alternate; }
+
+  .sb-spinner { display: inline-block; width: 15px; height: 15px; position: relative; vertical-align: text-bottom; }
+  .sb-spinner i { position: absolute; width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+  .sb-spinner i:nth-child(1) { top: 0; left: 50%; margin-left: -2px; opacity: 1; }
+  .sb-spinner i:nth-child(2) { top: 50%; right: 1px; margin-top: -2px; opacity: 0.7; }
+  .sb-spinner i:nth-child(3) { bottom: 0; left: 50%; margin-left: -2px; opacity: 0.45; }
+  .sb-spinner i:nth-child(4) { top: 50%; left: 1px; margin-top: -2px; opacity: 0.2; }
+  .sb-spinner { animation: sb-spin 0.8s linear infinite; }
+  .sb-card[data-status="working"] .sb-icon { color: var(--sb-blue); }
+
+  .sb-scan { display: inline-block; width: 15px; height: 15px; position: relative; vertical-align: text-bottom; }
+  .sb-scan svg { display: block; }
+  .sb-scan::after { content: ""; position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid currentColor; animation: sb-pulse-ring 1.4s ease-out infinite; }
+  .sb-card[data-status="reviewing"] .sb-icon { color: var(--sb-blue); }
+
+  .sb-card[data-status="rework"] .sb-icon { color: var(--sb-yellow); animation: sb-spin 1.5s ease-in-out infinite; }
+  .sb-card[data-status="passed"] .sb-icon { color: var(--sb-green); animation: sb-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+  .sb-card[data-status="failed"] .sb-icon { color: var(--sb-red); animation: sb-shake 0.4s ease-in-out 1, sb-pop 0.3s ease-out both; }
+
+  .sb-card[data-status="working"] { position: relative; overflow: hidden; }
+  .sb-card[data-status="working"]::after {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+    background: linear-gradient(to bottom, transparent 0%, var(--sb-blue) 30%, var(--sb-blue) 70%, transparent 100%);
+    animation: sb-border-flow 1.2s ease-in-out infinite alternate;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    body *, body *::before, body *::after {
+      animation-duration: 0.01s !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="sb-shell">
+  <header class="sb-top">
+    <div class="sb-title-row">
+      <span class="sb-logo" aria-hidden="true">
+        <svg viewBox="0 0 14 14" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">
+          <rect x="1.2" y="1.2" width="4.4" height="4.4" rx="1"/><rect x="8.4" y="1.2" width="4.4" height="4.4" rx="1"/>
+          <rect x="1.2" y="8.4" width="4.4" height="4.4" rx="1"/><rect x="8.4" y="8.4" width="4.4" height="4.4" rx="1"/>
+        </svg>
+      </span>
+      <h1 class="sb-title">团队看板</h1>
+      <span class="sb-runid" id="sb-runid"></span>
+    </div>
+    <div class="sb-badges">
+      <span class="sb-badge" id="sb-run" hidden>运行中</span>
+      <span class="sb-badge sb-gate" id="sb-gate" hidden>无验证命令</span>
+    </div>
+    <p class="sb-req" id="sb-req" hidden></p>
+  </header>
+  <div class="sb-progress" id="sb-progress" hidden>
+    <span class="sb-phase" id="sb-phase"></span>
+    <div class="sb-progress-bar"><div class="sb-progress-fill" id="sb-progress-fill"></div></div>
+    <span class="sb-progress-num" id="sb-progress-num"></span>
+  </div>
+  <div class="sb-warn" id="sb-warn" role="alert" hidden></div>
+  <div class="sb-cards" id="sb-cards"></div>
+  <footer class="sb-foot">
+    <span id="sb-elapsed"></span>
+    <span id="sb-updated"></span>
+    <span class="sb-foot-right">
+      <span id="sb-source"></span>
+      <button class="sb-refresh" id="sb-refresh" type="button" hidden>手动刷新</button>
+    </span>
+  </footer>
+</div>
+<script>
+(function () {
+  var BOARD_URI = "ui://zcode-swarm/board.json";
+  /* 服务端在 resources/read 时把当前看板数据注入这里：桥/直读都失效时也能静态渲染首屏。 */
+  var EMBEDDED = /*@@BOARD@@*/null/*@@END@@*/;
+
+  var APP_VERSION = "0.4.2";   // appInfo 版本与插件版本保持一致
+  var POLL_MS = 5000;          // 桥通道：订阅推送 + 5s 兜底轮询
+  var FETCH_POLL_MS = 2500;    // 直读通道：2.5s 轮询
+  var RETRY_MS = 30000;        // 降级/断线：静默重探测间隔
+  var FAIL_LIMIT = 4;          // 连续读取失败达到该次数判定通道断开
+
+  var body = document.body;
+  var docRoot = document.documentElement;
+  var lastData = null;        // 上次成功渲染的数据
+  var lastSig = "";           // 数据指纹：内容没变就不重绘（避免每轮轮询重启动画）
+  var lastSyncAt = 0;         // 数据到达时刻，用于本地推进耗时
+  var sourceLabel = "";       // 数据源文案
+  var adapter = null;         // 当前 MCP 桥适配器
+  var adapterStop = null;     // 桥通道兜底轮询的停止函数
+  var fetchStop = null;       // 直读轮询的停止函数
+  var fetchGen = 0;           // 直读通道代号：切通道后旧的迟到回包不再算到新通道头上
+  var failCount = 0;          // 当前通道连续读取失败次数
+  var warned = false;
+  var retryTimer = null;      // 单一重探测调度器（防并发）
+  var retrying = false;       // 重探测进行中标记
+
+  var $ = function (id) { return body.querySelector("#" + id); };
+  function cut(v, n) { var s = String(v == null ? "" : v); return s.length > n ? s.slice(0, n) + "…" : s; }
+
+  /* ══════════ 主题 ══════════ */
+  /*
+    默认跟随系统（CSS prefers-color-scheme）；宿主在 ui/initialize 的 hostContext.theme
+    或 ui/notifications/host-context-changed 里明确给出 light/dark 时以宿主为准。
+  */
+  function setTheme(theme) {
+    var t = String(theme == null ? "" : theme).toLowerCase();
+    try {
+      if (t === "light" || t === "dark") docRoot.setAttribute("data-sb-theme", t);
+      else docRoot.removeAttribute("data-sb-theme");
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /* 状态归一（与服务端映射同口径，多一层容错：老数据/中文状态也能吃） */
+  var STAGES = {
+    pending: "pending", "待开工": "pending", "待施工": "pending", queued: "pending", wait: "pending",
+    working: "working", building: "working", "施工中": "working",
+    reviewing: "reviewing", review: "reviewing", "审查中": "reviewing",
+    rework: "rework", reworking: "rework", "返工中": "rework", "返工": "rework",
+    passed: "passed", pass: "passed", ok: "passed", "已通过": "passed",
+    failed: "failed", fail: "failed", error: "failed", "未通过": "failed"
+  };
+  var STATE_LABEL = { pending: "待开工", working: "施工中", reviewing: "审查中", rework: "返工中", passed: "已通过", failed: "未通过" };
+  function normState(v) { return STAGES[String(v == null ? "" : v).trim().toLowerCase()] || "pending"; }
+
+  var RUNS = {
+    running: "running", run: "running", "运行中": "running", "进行中": "running",
+    completed: "completed", complete: "completed", done: "completed", "已完成": "completed",
+    failed: "failed", fail: "failed", error: "failed", "失败": "failed",
+    stopped: "stopped", stop: "stopped", cancelled: "stopped", "已停止": "stopped",
+    none: "none", "无运行": "none"
+  };
+  var PHASE_LABEL = { dispatching: "拆分派工", building: "施工中", reviewing: "审查中", gate: "验证门禁", done: "已完成", stopped: "已停止", idle: "" };
+  var RUN_LABEL = { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止", none: "无运行" };
+  function normRun(v) { return RUNS[String(v == null ? "" : v).trim().toLowerCase()] || ""; }
+
+  /* ══════════ 图标（描边风格，viewBox 0 0 14 14） ══════════ */
+  /*
+    全部用 DOM（createElementNS / createElement）构造，不拼 HTML 字符串：
+    ledger 里的标题、备注、模型名等文本永远不会被解释成标签或属性。
+  */
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs) {
+    var n = document.createElementNS(SVG_NS, tag);
+    if (attrs) {
+      for (var k in attrs) {
+        if (Object.prototype.hasOwnProperty.call(attrs, k) && attrs[k] != null) n.setAttribute(k, String(attrs[k]));
+      }
+    }
+    return n;
+  }
+  function svgBase(size, strokeWidth) {
+    return svgEl("svg", {
+      viewBox: "0 0 14 14",
+      width: size == null ? 14 : size,
+      height: size == null ? 14 : size,
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": strokeWidth == null ? 1.5 : strokeWidth,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round"
+    });
+  }
+  function iconCheck() {
+    var s = svgBase(14, 2);
+    s.appendChild(svgEl("path", { d: "M2.5 7.5l3 3 6-7" }));
+    return s;
+  }
+  function iconCross() {
+    var s = svgBase(14, 2);
+    s.appendChild(svgEl("path", { d: "M3 3l8 8M11 3l-8 8" }));
+    return s;
+  }
+  function iconClock() {
+    var s = svgBase(14);
+    s.appendChild(svgEl("circle", { cx: 7, cy: 7, r: 5.5 }));
+    s.appendChild(svgEl("path", { d: "M7 4v3l2.5 2.5" }));
+    return s;
+  }
+  function iconCaret() {
+    var s = svgBase(14, 1.8);
+    s.appendChild(svgEl("path", { d: "M5 6l2.5 2.5L10 6" }));
+    return s;
+  }
+  function iconRefresh() {
+    var s = svgBase(14);
+    s.appendChild(svgEl("path", { d: "M12 7a5 5 0 1 1-1.5-3.5" }));
+    s.appendChild(svgEl("path", { d: "M12 1v3h-3" }));
+    return s;
+  }
+  function iconSearch(size) {
+    var s = svgBase(size == null ? 13 : size);
+    s.appendChild(svgEl("circle", { cx: 6, cy: 6, r: 4 }));
+    s.appendChild(svgEl("path", { d: "M9.5 9.5L13 13" }));
+    return s;
+  }
+  function iconEmpty() {
+    var s = svgBase(26, 1.2);
+    s.appendChild(svgEl("rect", { x: 1.5, y: 2, width: 11, height: 10, rx: 1.5 }));
+    s.appendChild(svgEl("path", { d: "M1.5 5.5h11" }));
+    s.appendChild(svgEl("path", { d: "M4 8.5h2" }));
+    s.appendChild(svgEl("path", { d: "M4 10.2h4" }));
+    return s;
+  }
+  function spinnerNode() {
+    var wrap = document.createElement("span");
+    wrap.className = "sb-spinner";
+    wrap.setAttribute("aria-hidden", "true");
+    for (var i = 0; i < 4; i++) wrap.appendChild(document.createElement("i"));
+    return wrap;
+  }
+  function scanNode() {
+    var wrap = document.createElement("span");
+    wrap.className = "sb-scan";
+    wrap.setAttribute("aria-hidden", "true");
+    wrap.appendChild(iconSearch());
+    return wrap;
+  }
+  var ICONS = {
+    pending: iconClock,
+    working: spinnerNode,
+    reviewing: scanNode,
+    rework: iconRefresh,
+    passed: iconCheck,
+    failed: iconCross
+  };
+
+  /* 数字/时间格式化（全中文） */
+  function fmtDur(ms) {
+    var s = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    if (s < 60) return s + " 秒";
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + " 分 " + (s % 60) + " 秒";
+    var h = Math.floor(m / 60);
+    return h + " 时 " + (m % 60) + " 分";
+  }
+  function pad(n) { return String(n).length < 2 ? "0" + n : String(n); }
+  function fmtTime(iso) {
+    var t = Date.parse(String(iso || ""));
+    if (!isFinite(t)) return "";
+    var d = new Date(t);
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " +
+      pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  }
+
+  function showWarn(text) {
+    var el = $("sb-warn");
+    if (!el) return;
+    el.textContent = text;
+    el.hidden = false;
+    warned = true;
+  }
+  function hideWarn() {
+    if (!warned) return;
+    var el = $("sb-warn");
+    if (el) el.hidden = true;
+    warned = false;
+  }
+  function setRefreshVisible(visible) {
+    var btn = $("sb-refresh");
+    if (btn) btn.hidden = !visible;
+  }
+
+  /* ══════════ 渲染（全部走 DOM 文本节点，无动态 innerHTML） ══════════ */
+
+  function el(tag, cls) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    return n;
+  }
+  function setText(node, value) {
+    node.textContent = value == null ? "" : String(value);
+    return node;
+  }
+  function clearNode(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  /* 展开状态：跨重绘保留，避免轮询刷新把用户展开的卡收起来 */
+  var expanded = Object.create(null);
+
+  /** 折叠行的一段小字（来自详情字段的极简摘要，用于未展开时也能看出线索）。 */
+  function hintOf(card) {
+    if (card.state === "working" || card.state === "rework") return card.round > 0 ? "第 " + card.round + " 轮返工中" : "施工中";
+    var checks = Array.isArray(card.checks) ? card.checks.length : 0;
+    if (card.state === "reviewing") return checks ? "已交回，待审查" : "等待施工员交回";
+    if (card.state === "passed") return checks ? checks + " 项检查通过" : "审查通过";
+    if (card.state === "failed") return "未通过，待处理";
+    return card.scope ? "范围 " + card.scope : "尚未派工";
+  }
+
+  /** 详情区的一个分组：标题 + 可选列表。全部走 textContent，无 HTML 注入面。 */
+  function detailSection(title, items, opts) {
+    var list = Array.isArray(items) ? items.filter(function (x) { return x != null && String(x).trim() !== ""; }) : [];
+    if (!list.length) return null;
+    var box = el("div", "sb-dsec");
+    box.appendChild(setText(el("h5", "sb-dsec-title"), title));
+    if (opts && opts.text) {
+      var p = el("p", "sb-dsec-text");
+      p.textContent = String(list[0]);
+      box.appendChild(p);
+      return box;
+    }
+    var ul = el("ul", "sb-dlist");
+    list.forEach(function (item) {
+      var li = el("li");
+      li.textContent = String(item);
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+    return box;
+  }
+
+  /** 卡片详情面板：任务原文 / 验收 / 结果 / 检查项 / 审查 / 改动文件 / 问题 / 遗留。 */
+  function detailNode(card) {
+    var box = el("div", "sb-detail");
+    var sections = [
+      detailSection("任务", [card.task], { text: true }),
+      detailSection("写入范围", card.scope ? [card.scope] : []),
+      detailSection("验收标准", [card.acceptance], { text: true }),
+      detailSection("结果", [card.summary], { text: true }),
+      detailSection("检查项", card.checks),
+      detailSection("改动文件", card.changed),
+      detailSection("审查", card.review_checked),
+      detailSection("审查意见", card.review_findings),
+      detailSection("待处理", card.open_items),
+      detailSection("错误", card.error ? [card.error] : [], { text: true })
+    ];
+    var any = false;
+    sections.forEach(function (sec) { if (sec) { box.appendChild(sec); any = true; } });
+    // 元信息行：轮次 / 打回 / 扩编 / 起止时间
+    var metaBits = [];
+    if (card.round > 0) metaBits.push("返工 " + card.round + " 轮");
+    if (card.bounces > 0) metaBits.push("打回 " + card.bounces + " 批");
+    if (card.spawns > 0) metaBits.push("扩编 " + card.spawns + " 张");
+    if (card.launched_at) metaBits.push("开始 " + fmtTime(card.launched_at));
+    if (card.completed_at) metaBits.push("完成 " + fmtTime(card.completed_at));
+    if (card.review_pass === true) metaBits.push("审查结论：通过");
+    if (card.review_pass === false) metaBits.push("审查结论：未通过");
+    if (metaBits.length) {
+      box.appendChild(setText(el("div", "sb-dmeta"), metaBits.join(" · ")));
+      any = true;
+    }
+    return any ? box : null;
+  }
+
+  function cardNode(raw) {
+    var card = raw && typeof raw === "object" ? raw : {};
+    var st = normState(card.state);
+    var key = card.id != null ? String(card.id) : String(card.title || "");
+    var idText = card.id != null && String(card.id) !== "" ? "#" + String(card.id) : "";
+    var titleText = card.title != null && String(card.title).trim() ? String(card.title) : "（无标题）";
+    var stateText = card.state_label != null && String(card.state_label).trim() ? String(card.state_label) : (STATE_LABEL[st] || "");
+    var roleText = card.role != null && String(card.role).trim() ? String(card.role) : "";
+    var round = Math.max(0, Math.floor(Number(card.round) || 0));
+    var noteText = card.note == null ? "" : String(card.note);
+
+    var wrap = el("div", "sb-card");
+    wrap.setAttribute("data-status", st);
+    var isOpen = Boolean(expanded[key]);
+    if (isOpen) wrap.setAttribute("data-open", "true");
+
+    // ── 折叠行（点击整行切换展开）──
+    var row = el("button", "sb-row");
+    row.setAttribute("type", "button");
+    row.setAttribute("aria-expanded", isOpen ? "true" : "false");
+
+    var icon = el("span", "sb-icon");
+    icon.setAttribute("role", "img");
+    icon.setAttribute("aria-label", STATE_LABEL[st] || "状态");
+    icon.appendChild((ICONS[st] || iconClock)());
+
+    var main = el("div", "sb-main");
+    var head = el("div", "sb-head");
+    if (idText) head.appendChild(setText(el("span", "sb-id"), idText));
+    var titleNode = setText(el("span", "sb-card-title"), cut(titleText, 120));
+    if (titleText.length > 120) titleNode.setAttribute("title", titleText);
+    head.appendChild(titleNode);
+    head.appendChild(setText(el("span", "sb-state"), stateText));
+
+    var meta = el("div", "sb-meta");
+    if (roleText) meta.appendChild(setText(el("span"), cut(roleText, 24)));
+    if (round > 0) meta.appendChild(setText(el("span", "sb-rework"), "返工 " + round + " 轮"));
+    meta.appendChild(setText(el("span", "sb-hint"), hintOf(card)));
+
+    main.appendChild(head);
+    main.appendChild(meta);
+    if (noteText) {
+      var note = el("div", "sb-note");
+      note.setAttribute("title", noteText);
+      note.textContent = cut(noteText, 120);
+      main.appendChild(note);
+    }
+
+    var caret = el("span", "sb-caret");
+    caret.setAttribute("aria-hidden", "true");
+    caret.appendChild(iconCaret());
+
+    row.appendChild(icon);
+    row.appendChild(main);
+    row.appendChild(caret);
+    wrap.appendChild(row);
+
+    // ── 详情（展开时才建，避免每次轮询重建大量节点）──
+    if (isOpen) {
+      var detail = detailNode(card);
+      if (detail) wrap.appendChild(detail);
+    }
+
+    row.addEventListener("click", function () {
+      var now = !expanded[key];
+      if (now) expanded[key] = true; else delete expanded[key];
+      var fresh = cardNode(card);
+      wrap.parentNode.replaceChild(fresh, wrap);
+    });
+
+    return wrap;
+  }
+
+  function emptyNode(kind, running) {
+    var wrap = el("div", "sb-empty");
+    var icon = el("span", "sb-empty-icon");
+    icon.setAttribute("aria-hidden", "true");
+    icon.appendChild(iconEmpty());
+    wrap.appendChild(icon);
+
+    if (kind === "error") {
+      wrap.appendChild(setText(el("p", "sb-empty-title"), "看板数据暂不可用"));
+      var hintErr = el("p", "sb-empty-hint");
+      hintErr.textContent = "面板服务未连接，点右下角手动刷新重试（后台也会自动重连）。";
+      wrap.appendChild(hintErr);
+      return wrap;
+    }
+    if (running) {
+      // 运行中但还没有卡：不是“没有团队”，而是任务卡还在拆分/派发中
+      wrap.appendChild(setText(el("p", "sb-empty-title"), "正在拆分任务卡…"));
+      wrap.appendChild(setText(el("p", "sb-empty-hint"), "主会话拆完卡就会出现在这里，无需刷新。"));
+      return wrap;
+    }
+    wrap.appendChild(setText(el("p", "sb-empty-title"), "本项目暂无运行中的团队"));
+    var hint = el("p", "sb-empty-hint");
+    hint.appendChild(document.createTextNode("发 "));
+    hint.appendChild(setText(el("code"), "/swarm <需求>"));
+    hint.appendChild(document.createTextNode(" 开工"));
+    wrap.appendChild(hint);
+    return wrap;
+  }
+
+  function renderCards(data) {
+    var host = $("sb-cards");
+    if (!host) return;
+    clearNode(host);
+    var cards = Array.isArray(data.cards) ? data.cards : [];
+    if (!cards.length) {
+      host.appendChild(emptyNode("none", normRun(data.status) === "running"));
+      return;
+    }
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < cards.length; i++) frag.appendChild(cardNode(cards[i]));
+    host.appendChild(frag);
+  }
+
+  /* 运行状态徽章 / 验证徽章 / 需求行 */
+  function renderTop(data) {
+    var rawStatus = String(data.status == null ? "" : data.status).trim();
+    var known = normRun(rawStatus);
+    var run = known || "none";
+    var badge = $("sb-run");
+    if (!badge) return;
+    badge.hidden = false;
+    badge.setAttribute("data-run", run);
+    var label;
+    if (known) label = RUN_LABEL[known] || "无运行";
+    else if (rawStatus) label = String(data.status_label || rawStatus); // 未知状态：优先服务端中文标签
+    else label = "无运行";
+    badge.textContent = label;
+
+    var runid = $("sb-runid");
+    runid.textContent = data.run_id ? String(data.run_id) : "";
+    runid.title = data.run_id ? String(data.run_id) : "";
+
+    var gateBadge = $("sb-gate");
+    gateBadge.hidden = false;
+    var gate = data.gate && typeof data.gate === "object" ? data.gate : {};
+    var cmd = String(gate.command == null ? "" : gate.command);
+    var rounds = Number(gate.rounds) || 0;
+    var statusKey = String(gate.status == null ? "" : gate.status).trim().toLowerCase();
+    var gateText;
+    var gateState = "";
+    if (!cmd.trim()) {
+      gateText = "无验证命令";
+    } else if (statusKey === "pass" || statusKey === "passed") {
+      gateText = "验证通过"; gateState = "pass";
+    } else if (statusKey === "fail" || statusKey === "failed") {
+      gateText = "验证未通过"; gateState = "fail";
+    } else {
+      gateText = "验证未运行";
+    }
+    if (cmd.trim() && rounds > 0) gateText += "（第 " + rounds + " 轮）";
+    gateBadge.textContent = gateText;
+    gateBadge.title = cmd.trim() ? "验证命令：" + cmd : "本项目没有配置验证命令";
+    if (gateState) gateBadge.setAttribute("data-gate", gateState);
+    else gateBadge.removeAttribute("data-gate");
+
+    // 进度条 + 阶段：一眼看出跑到哪、还剩多少
+    var progress = data.progress && typeof data.progress === "object" ? data.progress : null;
+    var progWrap = $("sb-progress");
+    if (progWrap && progress && Number(progress.total) > 0) {
+      progWrap.hidden = false;
+      var fill = $("sb-progress-fill");
+      var pct = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+      if (fill) {
+        fill.style.width = pct + "%";
+        fill.setAttribute("data-full", pct >= 100 ? "true" : "false");
+      }
+      var num = $("sb-progress-num");
+      if (num) num.textContent = Number(progress.settled || 0) + "/" + Number(progress.total || 0) + " 已结算";
+      var phaseEl = $("sb-phase");
+      if (phaseEl) {
+        var phaseKey = String(data.phase || "");
+        phaseEl.textContent = PHASE_LABEL[phaseKey] || "";
+        if (phaseKey) phaseEl.setAttribute("data-phase", phaseKey); else phaseEl.removeAttribute("data-phase");
+      }
+    } else if (progWrap) {
+      progWrap.hidden = true;
+    }
+
+    var req = $("sb-req");
+    var reqText = String(data.requirement == null ? "" : data.requirement).trim();
+    if (reqText) {
+      req.textContent = "需求：" + reqText;
+      req.title = reqText;
+      req.hidden = false;
+    } else {
+      req.hidden = true;
+    }
+  }
+
+  function renderFooter(data) {
+    var counts = data.counts && typeof data.counts === "object" ? data.counts : {};
+    var total = 0, bits = [];
+    var order = [["passed", "已通过"], ["working", "施工中"], ["reviewing", "审查中"], ["rework", "返工中"], ["pending", "待开工"], ["failed", "未通过"]];
+    for (var i = 0; i < order.length; i++) {
+      var n = Number(counts[order[i][0]]) || 0;
+      total += n;
+      if (n > 0) bits.push(order[i][1] + " " + n);
+    }
+    var left = $("sb-elapsed");
+    var prefix = total > 0 ? total + " 张卡" : "";
+    // 台账里的发现/待办计数（纯数字，不引入任何文本注入面）
+    var findings = Number(data.findings_count) || 0;
+    var deferred = Number(data.deferred_count) || 0;
+    if (findings > 0) bits.push("发现 " + findings);
+    if (deferred > 0) bits.push("待办 " + deferred);
+    var durMs = Number(data.elapsed_ms) || 0;
+    if (normRun(data.status) === "running") durMs += Date.now() - lastSyncAt;
+    var durText = durMs > 0 ? "耗时 " + fmtDur(durMs) : "";
+    var joined = [prefix].concat(bits).concat(durText ? [durText] : []).filter(Boolean).join(" · ");
+    left.textContent = joined;
+
+    var upd = $("sb-updated");
+    var t = fmtTime(data.updated_at);
+    upd.textContent = t ? "最后更新 " + t : "";
+
+    var src = $("sb-source");
+    src.textContent = sourceLabel;
+  }
+
+  function emptyData() {
+    return { status: "none", gate: {}, cards: [], counts: {}, elapsed_ms: 0 };
+  }
+
+  /** 整体重绘：内容指纹没变就只刷新底栏（耗时在本地走秒）。 */
+  function render(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data)) return;
+    lastData = data;
+    lastSyncAt = Date.now();
+    var sig;
+    try {
+      sig = JSON.stringify(data);
+    } catch (e) {
+      sig = "";
+    }
+    if (sig && sig === lastSig) {
+      renderFooter(data);
+      return;
+    }
+    lastSig = sig;
+    renderTop(data);
+    renderCards(data);
+    renderFooter(data);
+  }
+
+  /** 一条数据都没有时的错误态：明确的“读不到”而不是“没有团队”。 */
+  function renderErrorState() {
+    lastData = emptyData();
+    lastSyncAt = Date.now();
+    lastSig = "";
+    renderTop(lastData);
+    var host = $("sb-cards");
+    if (host) {
+      clearNode(host);
+      host.appendChild(emptyNode("error"));
+    }
+    renderFooter(lastData);
+  }
+
+  /* ══════════ 数据接入：三级降级 ══════════ */
+
+  /** 把 MCP resources/read 的返回体（可能层层包裹）解析成看板数据对象。 */
+  function pickData(resp) {
+    if (!resp || typeof resp !== "object" || resp.error) return null;
+    var r = resp;
+    if (r.result) r = r.result;
+    if (Array.isArray(r.contents)) {
+      for (var i = 0; i < r.contents.length; i++) {
+        var c = r.contents[i];
+        if (!c) continue;
+        var bodyText = c.text != null ? c.text : c.blob;
+        if (typeof bodyText !== "string") continue;
+        try {
+          var parsed = JSON.parse(bodyText);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+        } catch (e) { /* 不是 JSON 就继续找下一块 */ }
+      }
+      return null;
+    }
+    if (typeof r === "string") {
+      try {
+        var parsedStr = JSON.parse(r);
+        return parsedStr && typeof parsedStr === "object" && !Array.isArray(parsedStr) ? parsedStr : null;
+      } catch (e2) { return null; }
+    }
+    if (r.status !== undefined || r.cards !== undefined) return r;
+    return null;
+  }
+
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (!settled) { settled = true; resolve(null); }
+      }, ms);
+      Promise.resolve(promise).then(function (v) {
+        if (!settled) { settled = true; clearTimeout(timer); resolve(v); }
+      }, function () {
+        if (!settled) { settled = true; clearTimeout(timer); resolve(null); }
+      });
+    });
+  }
+
+  /**
+   * 调用可能同步抛异常的适配器方法：一律转成 Promise，避免一个坏适配器
+   * 把轮询 timer 里的异常抛到 window（那会让轮询链直接停掉）。
+   */
+  function safeCall(fn) {
+    try {
+      return Promise.resolve(fn());
+    } catch (e) {
+      return Promise.reject(e);
+    }
+  }
+
+  /**
+   * 父窗口 JSON-RPC 桥：宿主里 MCP Apps 面板走 window.parent + postMessage。
+   * 先 ui/initialize 握手，再 resources/read / subscribe。
+   * 只处理 ev.source === window.parent 的消息（防同窗/其他 frame 伪造响应）。
+   */
+  function parentBridge() {
+    try {
+      if (!window.parent || window.parent === window || typeof window.parent.postMessage !== "function") return null;
+    } catch (e) {
+      return null;
+    }
+    var seq = 0;
+    var pending = {};
+    var updateCb = null;
+    var disposed = false;
+
+    function fromParent(ev) {
+      return !!ev && ev.source === window.parent;
+    }
+
+    function onMessage(ev) {
+      if (disposed || !fromParent(ev)) return;
+      var d = ev.data;
+      if (!d || d.jsonrpc !== "2.0") return;
+      if (d.id != null) {
+        var key = String(d.id);
+        if (!Object.prototype.hasOwnProperty.call(pending, key)) return; // 未知 id 一律忽略
+        var cb = pending[key];
+        delete pending[key];
+        cb(d);
+        return;
+      }
+      if (d.method === "notifications/resources/updated") {
+        var uri = d.params && d.params.uri;
+        if (uri && uri !== BOARD_URI) return;
+        if (updateCb) {
+          try { updateCb(); } catch (e) { /* 刷新失败由通道自身的失败计数兜底 */ }
+        }
+        return;
+      }
+      if (d.method === "ui/notifications/host-context-changed") {
+        setTheme(d.params && d.params.theme);
+      }
+    }
+
+    try { window.addEventListener("message", onMessage); } catch (e) { return null; }
+
+    function rpc(method, params, ms) {
+      return new Promise(function (resolve) {
+        var id = "swarm-panel-" + (++seq);
+        pending[id] = resolve;
+        try {
+          window.parent.postMessage({ jsonrpc: "2.0", id: id, method: method, params: params || {} }, "*");
+        } catch (e) {
+          delete pending[id];
+          resolve(null);
+          return;
+        }
+        setTimeout(function () {
+          if (Object.prototype.hasOwnProperty.call(pending, id)) {
+            delete pending[id];
+            resolve(null);
+          }
+        }, ms || 2500);
+      });
+    }
+    function notify(method, params) {
+      try {
+        window.parent.postMessage({ jsonrpc: "2.0", method: method, params: params || {} }, "*");
+      } catch (e) { /* 通知发不出去不影响读数据 */ }
+    }
+
+    return {
+      name: "面板通道",
+      /**
+       * 握手判活口径：只有“超时且没有任何响应”才算桥不可用。
+       * 宿主对 ui/initialize 回 JSON-RPC error（例如没实现该可选方法）时桥仍然是活的，
+       * resources/read 往往照常可用——不能因此把整条通道判死。
+       */
+      handshake: function () {
+        return rpc("ui/initialize", {
+          protocolVersion: "2026-01-26",
+          appInfo: { name: "zcode-swarm-board", version: APP_VERSION }
+        }, 1500).then(function (resp) {
+          if (!resp) return false;
+          if (resp.result && resp.result.hostContext) setTheme(resp.result.hostContext.theme);
+          if (!resp.error) notify("ui/notifications/initialized");
+          return true;
+        });
+      },
+      read: function () {
+        return rpc("resources/read", { uri: BOARD_URI }, 3000).then(pickData);
+      },
+      subscribe: function (onUpdate) {
+        updateCb = typeof onUpdate === "function" ? onUpdate : null;
+        // 订阅失败就只靠 5s 兜底轮询；不需要额外重试（重连由通道管理统一处理）
+        rpc("resources/subscribe", { uri: BOARD_URI }, 2000).then(function () { /* 忽略结果 */ }, function () { /* 忽略 */ });
+      },
+      dispose: function () {
+        disposed = true;
+        updateCb = null;
+        try { window.removeEventListener("message", onMessage); } catch (e) { /* 忽略 */ }
+        var keys = Object.keys(pending);
+        for (var i = 0; i < keys.length; i++) {
+          var cb = pending[keys[i]];
+          delete pending[keys[i]];
+          if (typeof cb === "function") {
+            try { cb(null); } catch (e2) { /* 忽略 */ }
+          }
+        }
+      }
+    };
+  }
+
+  /** 通用「宿主全局对象」适配器：探测常见的资源读取/订阅方法名。 */
+  function globalBridge(obj, globalName, method) {
+    if (!obj) return null;
+    var read = null;
+    try {
+      if (typeof obj[method] === "function") read = function () { return obj[method]({ uri: BOARD_URI }); };
+      else if (obj.mcp && typeof obj.mcp[method] === "function") read = function () { return obj.mcp[method]({ uri: BOARD_URI }); };
+      else if (obj.resources && typeof obj.resources.read === "function") read = function () { return obj.resources.read({ uri: BOARD_URI }); };
+      else if (typeof obj.mcpRequest === "function") {
+        read = function () { return obj.mcpRequest({ method: "resources/read", params: { uri: BOARD_URI } }); };
+      } else if (typeof obj.rpc === "function") {
+        read = function () { return obj.rpc("resources/read", { uri: BOARD_URI }); };
+      }
+    } catch (e) {
+      return null;
+    }
+    if (!read) return null;
+    var sub = null;
+    try {
+      if (typeof obj.subscribeResource === "function") sub = function (uri, cb) { return obj.subscribeResource({ uri: uri }, cb); };
+      else if (obj.mcp && typeof obj.mcp.subscribeResource === "function") sub = function (uri, cb) { return obj.mcp.subscribeResource({ uri: uri }, cb); };
+      else if (obj.mcp && typeof obj.mcp.subscribe === "function") sub = function (uri, cb) { return obj.mcp.subscribe({ uri: uri }, cb); };
+    } catch (e2) {
+      sub = null;
+    }
+    return {
+      name: globalName + " 通道",
+      handshake: function () { return Promise.resolve(true); },
+      read: function () { return withTimeout(safeCall(read), 2500).then(pickData); },
+      subscribe: function (onUpdate) {
+        if (!sub) return;
+        try { sub(BOARD_URI, onUpdate); } catch (e) { /* 订阅失败只靠轮询 */ }
+      },
+      dispose: function () {}
+    };
+  }
+
+  /** 依次尝试所有桥入口；返回 { bridge, data }（data 是探测时读到的那一份，省一次重读）。 */
+  function detectBridge() {
+    var candidates = [];
+    try { var p = parentBridge(); if (p) candidates.push(p); } catch (e) { /* 忽略 */ }
+    try { var z = globalBridge(window.zcode, "zcode", "readResource"); if (z) candidates.push(z); } catch (e2) { /* 忽略 */ }
+    try { var m = globalBridge(window.mcp, "mcp", "readResource"); if (m) candidates.push(m); } catch (e3) { /* 忽略 */ }
+    // webkit 老壳只能单向 postMessage、拿不到响应，不具备读取能力：探测到也不采用。
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.zcode) {
+        if (typeof console !== "undefined" && console.debug) console.debug("[swarm-board] 探测到 webkit 消息桥，但无法读取资源，跳过。");
+      }
+    } catch (e4) { /* 忽略 */ }
+
+    function tryAt(i) {
+      if (i >= candidates.length) return Promise.resolve(null);
+      var cand = candidates[i];
+      var attempt;
+      try {
+        // safeCall：适配器握手/读取同步抛异常时转成 rejected promise，由下面的 reject 分支跳过它
+        attempt = withTimeout(safeCall(function () { return cand.handshake(); }).then(function (ok) {
+          if (!ok) return null;
+          return withTimeout(safeCall(function () { return cand.read(); }), 3000).then(function (data) {
+            if (data && typeof data === "object" && !Array.isArray(data)) return { bridge: cand, data: data };
+            return null;
+          });
+        }), 6000);
+      } catch (e) {
+        attempt = Promise.resolve(null); // 适配器自身抛异常：当它不可用
+      }
+      return attempt.then(function (got) {
+        if (got) {
+          // 失败过的候选要拆掉监听，避免多个 postMessage 监听器并存
+          for (var k = 0; k < i; k++) { try { candidates[k].dispose(); } catch (e) { /* 忽略 */ } }
+          return got;
+        }
+        try { cand.dispose(); } catch (e2) { /* 忽略 */ }
+        return tryAt(i + 1);
+      }, function () {
+        try { cand.dispose(); } catch (e3) { /* 忽略 */ }
+        return tryAt(i + 1);
+      });
+    }
+    return tryAt(0);
+  }
+
+  function startPolling(fn, ms) {
+    var stopped = false;
+    var tick = function () {
+      if (stopped) return;
+      // 再包一层：即便 fn 同步抛异常，也保住轮询链不断
+      Promise.resolve().then(function () { return fn(); }).then(function () {
+        if (!stopped) setTimeout(tick, ms);
+      }, function () {
+        if (!stopped) setTimeout(tick, ms);
+      });
+    };
+    setTimeout(tick, ms);
+    return function () { stopped = true; };
+  }
+
+  function applyData(data) {
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      showWarn("看板数据读取失败，正在显示上次的画面。");
+      return false;
+    }
+    render(data);
+    // 数据恢复正常就把黄条收起（失败时保留上次画面 + 黄条提示）
+    hideWarn();
+    return true;
+  }
+
+  /** 统一拆掉当前通道：先停轮询、再拆监听，切通道前必须调用（防监听器叠加）。 */
+  function teardownChannel() {
+    if (adapterStop) {
+      try { adapterStop(); } catch (e) { /* 忽略 */ }
+      adapterStop = null;
+    }
+    if (fetchStop) {
+      try { fetchStop(); } catch (e2) { /* 忽略 */ }
+      fetchStop = null;
+    }
+    var old = adapter;
+    adapter = null;
+    if (old) {
+      try { old.dispose(); } catch (e3) { /* 忽略 */ }
+    }
+  }
+
+  function stopRetry() {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  }
+
+  /** 单一调度器：降级/断线后每隔 RETRY_MS 静默重探测一次。 */
+  function scheduleRetry() {
+    if (retryTimer) return;
+    retryTimer = setTimeout(function () {
+      retryTimer = null;
+      retryTick();
+    }, RETRY_MS);
+  }
+
+  function retryTick() {
+    // 已经有通道了就不再排下一轮（连上时会 stopRetry，这里只是双保险）
+    if (adapter || fetchStop) return;
+    if (retrying) { scheduleRetry(); return; }
+    retrying = true;
+    connectOnce().then(function (ok) {
+      retrying = false;
+      if (!ok) scheduleRetry();
+    }, function () {
+      retrying = false;
+      scheduleRetry();
+    });
+  }
+
+  /** 第一级：MCP 桥。成功则订阅推送 + 每 5 秒兜底轮询。 */
+  function startBridge(bridge, initial) {
+    teardownChannel();
+    adapter = bridge;
+    failCount = 0;
+    sourceLabel = bridge.name;
+    if (initial) applyData(initial);
+    else renderFooter(lastData || emptyData());
+    try {
+      bridge.subscribe(function () { refresh(); });
+    } catch (e) { /* 订阅失败只靠轮询 */ }
+    adapterStop = startPolling(refresh, POLL_MS);
+    setRefreshVisible(false);
+    hideWarn();
+    stopRetry();
+  }
+
+  /** 第二级：宿主可能拦截 ui: 协议，能 fetch 就直接定时轮询。 */
+  function fetchBoard() {
+    return Promise.resolve()
+      .then(function () { return fetch(BOARD_URI, { cache: "no-store" }); })
+      .then(function (resp) {
+        if (!resp || !resp.ok) throw new Error("HTTP " + (resp ? resp.status : "?"));
+        return resp.text();
+      })
+      .then(function (text) {
+        var data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          throw new Error("看板数据不是合法 JSON");
+        }
+        return data;
+      });
+  }
+
+  function fetchTick() {
+    if (!fetchStop) return null; // 通道已拆，丢弃迟到的执行
+    var gen = fetchGen;
+    return fetchBoard().then(function (data) {
+      if (gen !== fetchGen || !fetchStop) return; // 期间切过通道，结果作废
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        failCount = 0;
+        applyData(data);
+        hideWarn();
+        return;
+      }
+      softFail("看板数据读取失败（数据格式不对）");
+    }, function (err) {
+      if (gen !== fetchGen || !fetchStop) return;
+      softFail("看板数据读取失败（" + (err && err.message ? err.message : "无法连接面板服务") + "）");
+    });
+  }
+
+  function startFetchMode(data) {
+    teardownChannel();
+    sourceLabel = "直接读取";
+    failCount = 0;
+    applyData(data);
+    setRefreshVisible(false);
+    hideWarn();
+    stopRetry();
+    fetchGen++;
+    fetchStop = startPolling(fetchTick, FETCH_POLL_MS);
+  }
+
+  /** 连续失败：黄条提示 + 达到阈值后整条通道降级到「断开重连」。 */
+  function softFail(reason) {
+    if (!adapter && !fetchStop) return; // 通道已拆，忽略迟到失败
+    failCount++;
+    showWarn((reason || "看板数据读取失败") + "，正在显示上次的画面。");
+    if (failCount >= FAIL_LIMIT) dropChannel();
+  }
+
+  /** 断开：保留上次画面，收起旧通道（含监听器），进入 30 秒静默重连。 */
+  function dropChannel() {
+    failCount = 0;
+    teardownChannel();
+    sourceLabel = "断开，重试中";
+    renderFooter(lastData || emptyData());
+    setRefreshVisible(true);
+    showWarn("面板数据通道已断开，正在显示上次的画面；每 " + Math.round(RETRY_MS / 1000) + " 秒自动重连，也可点手动刷新。");
+    scheduleRetry();
+  }
+
+  function refresh() {
+    var a = adapter;
+    if (!a) return Promise.resolve(null);
+    return safeCall(function () { return a.read(); }).then(function (p) {
+      return withTimeout(p, 4500);
+    }, function () {
+      return null; // read 同步抛异常：当本轮回读失败
+    }).then(function (data) {
+      if (a !== adapter) return null; // 通道已切换，丢弃过期结果
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        failCount = 0;
+        applyData(data);
+        hideWarn();
+        return data;
+      }
+      softFail("看板数据读取失败");
+      return null;
+    });
+  }
+
+  /** 依次尝试：MCP 桥 → 直读一次；成功返回 true 并已挂好通道。 */
+  function connectOnce() {
+    return safeCall(detectBridge).then(function (p) {
+      return withTimeout(p, 12000); // 多个候选逐个探测，给足总时间
+    }, function () {
+      return null;
+    }).then(function (hit) {
+      if (hit && hit.bridge) {
+        startBridge(hit.bridge, hit.data);
+        return true;
+      }
+      return withTimeout(safeCall(fetchBoard), 4000).then(function (data) {
+        if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+        startFetchMode(data);
+        return true;
+      }, function () { return false; });
+    });
+  }
+
+  /** 第三级：静态渲染服务端注入的首屏数据 + 手动刷新按钮，并开始 30 秒静默重连。 */
+  function startStatic() {
+    teardownChannel();
+    sourceLabel = "静态快照";
+    if (EMBEDDED && typeof EMBEDDED === "object" && !Array.isArray(EMBEDDED)) {
+      applyData(EMBEDDED);
+    } else {
+      // 连快照都没有：明确展示“读取失败”的空态，而不是误报“暂无团队”
+      renderErrorState();
+    }
+    setRefreshVisible(true);
+    showWarn("面板服务未连接，显示的是打开面板时的快照，点右下角手动刷新重试（后台每 " + Math.round(RETRY_MS / 1000) + " 秒也会自动重连）。");
+    scheduleRetry();
+  }
+
+  /** 手动刷新：优先重探测/重读，不再依赖 location.reload（ui: 协议下重载未必可用）。 */
+  function manualRetry() {
+    if (retrying) return;
+    if (adapter) { refresh(); return; }
+    if (fetchStop) { fetchTick(); return; }
+    stopRetry();
+    retrying = true;
+    showWarn("正在重新连接面板服务…");
+    connectOnce().then(function (ok) {
+      retrying = false;
+      if (!ok) {
+        showWarn("仍无法连接面板服务，显示的是上次的快照；后台每 " + Math.round(RETRY_MS / 1000) + " 秒还会自动重连。");
+        scheduleRetry();
+      }
+    }, function () {
+      retrying = false;
+      showWarn("重新连接失败，显示的是上次的快照。");
+      scheduleRetry();
+    });
+  }
+
+  function boot() {
+    // 先画内置空态（规范：加载时先空态，拿到数据后整体重绘），避免白屏
+    lastSig = "";
+    render(emptyData());
+    if (EMBEDDED && typeof EMBEDDED === "object" && !Array.isArray(EMBEDDED)) {
+      // 服务端快照下一拍补上：既是减速白屏的过渡画面，也是第 3 级降级的兜底数据
+      setTimeout(function () { render(EMBEDDED); }, 0);
+    }
+
+    var btn = $("sb-refresh");
+    if (btn) btn.addEventListener("click", manualRetry);
+
+    connectOnce().then(function (ok) {
+      if (ok) return; // startBridge / startFetchMode 已收起黄条并设好按钮可见性
+      startStatic();
+    }, function () {
+      startStatic();
+    });
+
+    // 底栏耗时本地走秒（只更新底栏，不重绘卡片，避免动画重启）
+    setInterval(function () {
+      if (lastData && normRun(lastData.status) === "running") renderFooter(lastData);
+    }, 1000);
+  }
+
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+})();
+</script>
+</body>
+</html>

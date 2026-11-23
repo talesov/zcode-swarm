@@ -1,0 +1,9 @@
+<models count="7">
+account:bigmodel-individual-coding-plan/GLM-5.3 — BigModel Individual Coding Plan; levels: low,high,max (default max) [current]
+account:bigmodel-individual-coding-plan/GLM-5.3-Flash — BigModel Individual Coding Plan; levels: low,high,max (default max)
+magpie/zcode/GLM-5.3 — magpie; levels: low,high,max (default max)
+magpie/zcode/GLM-5.3-Flash — magpie; levels: low,high,max (default max)
+magpie/kimi-code-cn/k3.1-pro — magpie; levels: low,high,max (default max)
+magpie/qwen-token-plan/qwen3.8-max — magpie; levels: low,medium,xhigh (default xhigh)
+magpie/opendesign/deepseek-v4.1-flash — magpie; levels: low,high,max (default max)
+</models>

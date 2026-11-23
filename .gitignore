@@ -1,0 +1,9 @@
+.mimosa/
+.swarm/
+.v2c/
+.video_agent/
+*.log
+
+# 内部机制逆向笔记与本地测试文档——禁止公开（2026-11-21 用户指示）
+docs/zcode-internals/
+docs/zcode-host-reverse-notes.md

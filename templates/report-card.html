@@ -1,0 +1,1090 @@
+<div id="zcode-swarm-report" class="card">
+<style>
+  /* ══════════════════════════════════════════════════════════════════
+     最终报告卡片 · 艺术化扁平重设计
+     - 结论先行：超大字号「通过数 / 总数」英雄区，一眼看到结果
+     - 统计磁贴替代表格里的重复信息；任务卡网格替代表格行
+     - 颜色语义：通过=绿 / 未通过=红 / 返工=黄 / 进行中=主色 / 未运行=中性
+     - 所有颜色取宿主主题变量并带 fallback，深浅色自适应
+     - 动效只用 transform + opacity；prefers-reduced-motion 时压缩到近零
+     ══════════════════════════════════════════════════════════════════ */
+  #zcode-swarm-report {
+    --zr-accent: var(--primary, #4f46e5);
+    --zr-fg: var(--foreground, #111827);
+    --zr-mfg: var(--muted-foreground, #6b7280);
+    --zr-line: var(--border, rgba(127, 127, 127, 0.26));
+    --zr-surface: var(--muted, rgba(127, 127, 127, 0.08));
+    --zr-card-bg: var(--card, transparent);
+    --zr-radius: 14px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+    color: var(--zr-fg);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13.5px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    animation: zr-card-in 0.32s ease-out both;
+  }
+  #zcode-swarm-report [hidden] { display: none !important; }
+  /* 结论色调（整卡强调色） */
+  #zcode-swarm-report[data-tone="pass"] { --zr-accent: var(--green, #16a34a); }
+  #zcode-swarm-report[data-tone="fail"] { --zr-accent: var(--red, var(--destructive, #dc2626)); }
+  #zcode-swarm-report[data-tone="mixed"] { --zr-accent: var(--yellow, #d97706); }
+  #zcode-swarm-report[data-tone="neutral"] { --zr-accent: var(--muted-foreground, #6b7280); }
+  /* 状态色（元素级，供色条/徽章/磁贴共用） */
+  #zcode-swarm-report [data-st="passed"] { --zr-st: var(--green, #16a34a); }
+  #zcode-swarm-report [data-st="failed"] { --zr-st: var(--red, var(--destructive, #dc2626)); }
+  #zcode-swarm-report [data-st="rework"] { --zr-st: var(--yellow, #d97706); }
+  #zcode-swarm-report [data-st="reviewing"],
+  #zcode-swarm-report [data-st="working"] { --zr-st: var(--primary, #4f46e5); }
+  #zcode-swarm-report [data-st="pending"] { --zr-st: var(--muted-foreground, #6b7280); }
+
+  /* ───────────── 英雄区：结论先行 ───────────── */
+  #zcode-swarm-report .zr-hero {
+    position: relative;
+    display: grid;
+    gap: 14px;
+    padding: 22px 24px 20px;
+    border-radius: 20px;
+    border: 1px solid var(--zr-line);
+    border: 1px solid color-mix(in srgb, var(--zr-accent) 24%, var(--zr-line));
+    background-color: var(--zr-surface);
+    background-color: color-mix(in srgb, var(--zr-accent) 9%, transparent);
+    background-image: radial-gradient(120% 120% at 100% 0%, color-mix(in srgb, var(--zr-accent) 18%, transparent) 0%, transparent 58%);
+    overflow: hidden;
+  }
+  #zcode-swarm-report .zr-hero-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  #zcode-swarm-report .zr-title {
+    margin: 0;
+    min-width: 0;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    color: var(--zr-mfg);
+    overflow-wrap: anywhere;
+    animation: zr-fade 0.4s ease-out both;
+  }
+  #zcode-swarm-report .zr-verdict {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 11px;
+    margin-left: auto;
+    border-radius: 999px;
+    border: 1px solid var(--zr-line);
+    border: 1px solid color-mix(in srgb, var(--zr-accent) 30%, transparent);
+    background: var(--zr-surface);
+    background: color-mix(in srgb, var(--zr-accent) 12%, transparent);
+    color: var(--zr-accent);
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    animation: zr-fade 0.4s ease-out 0.08s both;
+  }
+  #zcode-swarm-report .zr-hero-body { display: flex; align-items: flex-end; gap: 6px 20px; flex-wrap: wrap; min-width: 0; }
+  #zcode-swarm-report .zr-score {
+    display: flex;
+    align-items: baseline;
+    gap: 2px;
+    line-height: 0.92;
+    letter-spacing: -0.045em;
+    font-variant-numeric: tabular-nums;
+    animation: zr-hero-num 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  }
+  #zcode-swarm-report .zr-score-num {
+    font-size: clamp(44px, 12vw, 68px);
+    font-weight: 700;
+    color: var(--zr-fg);
+  }
+  #zcode-swarm-report .zr-score-den {
+    font-size: clamp(20px, 5vw, 30px);
+    font-weight: 500;
+    color: var(--zr-mfg);
+    letter-spacing: -0.02em;
+  }
+  #zcode-swarm-report .zr-hero-aside { display: grid; gap: 1px; padding-bottom: 7px; min-width: 0; animation: zr-fade 0.45s ease-out 0.12s both; }
+  #zcode-swarm-report .zr-score-cap { font-size: 13px; font-weight: 600; color: var(--zr-fg); }
+  #zcode-swarm-report .zr-score-pct { font-size: 11.5px; color: var(--zr-mfg); }
+  /* 色段图例：解释 zr-segs 每段的颜色语义，宽屏时吃掉英雄区右侧留白 */
+  #zcode-swarm-report .zr-legend {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-left: auto;
+    padding-bottom: 6px;
+    min-width: 0;
+    font-size: 11.5px;
+    color: var(--zr-mfg);
+    animation: zr-fade 0.45s ease-out 0.16s both;
+  }
+  #zcode-swarm-report .zr-legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #zcode-swarm-report .zr-legend-dot { width: 8px; height: 8px; border-radius: 3px; background: var(--zr-st, var(--zr-mfg)); flex: 0 0 auto; }
+  #zcode-swarm-report .zr-legend-num { font-weight: 650; color: var(--zr-fg); font-variant-numeric: tabular-nums; }
+  /* 每张卡一个色段：进度条的艺术化替代 */
+  #zcode-swarm-report .zr-segs { display: flex; gap: 4px; height: 6px; min-width: 0; }
+  #zcode-swarm-report .zr-seg {
+    flex: 1 1 0;
+    min-width: 3px;
+    border-radius: 99px;
+    background: var(--zr-st, var(--zr-line));
+    transform-origin: left center;
+    animation: zr-seg-in 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+    animation-delay: calc(var(--zr-i, 0) * 38ms + 150ms);
+  }
+  #zcode-swarm-report .zr-req {
+    margin: 0;
+    padding: 2px 0 0 12px;
+    border-left: 2px solid color-mix(in srgb, var(--zr-accent) 46%, var(--zr-line));
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--zr-mfg);
+    overflow-wrap: anywhere;
+  }
+  #zcode-swarm-report .zr-req-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; color: var(--zr-mfg); opacity: 0.85; }
+
+  /* ───────────── 统计磁贴 ───────────── */
+  #zcode-swarm-report .zr-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); gap: 10px; min-width: 0; }
+  #zcode-swarm-report .zr-tile {
+    --zr-tone: var(--zr-mfg);
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+    padding: 13px 14px 12px;
+    border-radius: var(--zr-radius);
+    border: 1px solid var(--zr-line);
+    background: var(--zr-surface);
+    background: color-mix(in srgb, var(--zr-tone) 7%, transparent);
+    animation: zr-rise 0.42s ease-out both;
+    animation-delay: calc(var(--zr-i, 0) * 46ms + 90ms);
+  }
+  #zcode-swarm-report .zr-tile[data-tone="pass"] { --zr-tone: var(--green, #16a34a); }
+  #zcode-swarm-report .zr-tile[data-tone="fail"] { --zr-tone: var(--red, var(--destructive, #dc2626)); }
+  #zcode-swarm-report .zr-tile[data-tone="warn"] { --zr-tone: var(--yellow, #d97706); }
+  #zcode-swarm-report .zr-tile[data-tone="run"] { --zr-tone: var(--primary, #4f46e5); }
+  #zcode-swarm-report .zr-tile-value {
+    font-size: 27px;
+    font-weight: 700;
+    line-height: 1.12;
+    letter-spacing: -0.03em;
+    color: var(--zr-tone);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  #zcode-swarm-report .zr-tile-value[data-word="true"] { font-size: 19px; font-weight: 650; letter-spacing: 0; padding: 6px 0 4px; }
+  #zcode-swarm-report .zr-tile-label { font-size: 11.5px; color: var(--zr-mfg); }
+  #zcode-swarm-report .zr-tile-sub { font-size: 10.5px; color: var(--zr-mfg); opacity: 0.82; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ───────────── 分区标题 ───────────── */
+  #zcode-swarm-report .zr-sec {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    animation: zr-rise 0.42s ease-out both;
+    animation-delay: var(--zr-sec-delay, 120ms);
+  }
+  #zcode-swarm-report .zr-sec-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  #zcode-swarm-report .zr-h {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    color: var(--zr-fg);
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  #zcode-swarm-report .zr-h::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 2px;
+    background: var(--zr-sec-accent, var(--zr-accent));
+    transform: translateY(-1px);
+  }
+  #zcode-swarm-report .zr-sec[data-tone="warn"] { --zr-sec-accent: var(--yellow, #d97706); }
+  #zcode-swarm-report .zr-sec[data-tone="mute"] { --zr-sec-accent: var(--zr-mfg); }
+  #zcode-swarm-report .zr-count { margin-left: auto; flex: 0 0 auto; font-size: 11.5px; color: var(--zr-mfg); white-space: nowrap; }
+
+  /* ───────────── 任务卡网格（替代表格） ───────────── */
+  #zcode-swarm-report .zr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 268px), 1fr)); gap: 11px; min-width: 0; }
+  #zcode-swarm-report .zr-kcard {
+    position: relative;
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+    padding: 13px 15px 14px 17px;
+    border-radius: var(--zr-radius);
+    border: 1px solid var(--zr-line);
+    background: var(--zr-surface);
+    background: color-mix(in srgb, var(--zr-st, var(--zr-mfg)) 6%, transparent);
+    overflow: hidden;
+    animation: zr-rise 0.42s ease-out both;
+    animation-delay: calc(var(--zr-i, 0) * 42ms + 140ms);
+  }
+  #zcode-swarm-report .zr-kcard::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--zr-st, var(--zr-mfg));
+    opacity: 0.9;
+  }
+  #zcode-swarm-report .zr-kcard-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #zcode-swarm-report .zr-kid {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--zr-mfg);
+    font-variant-numeric: tabular-nums;
+  }
+  #zcode-swarm-report .zr-stchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+    flex: 0 0 auto;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--zr-st, var(--zr-mfg));
+    background: var(--zr-surface);
+    background: color-mix(in srgb, var(--zr-st, var(--zr-mfg)) 13%, transparent);
+  }
+  #zcode-swarm-report .zr-ktitle {
+    margin: 0;
+    font-size: 14.5px;
+    font-weight: 600;
+    line-height: 1.38;
+    color: var(--zr-fg);
+    overflow-wrap: anywhere;
+  }
+  #zcode-swarm-report .zr-kmeta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 3px 8px;
+    min-width: 0;
+    font-size: 11.5px;
+    color: var(--zr-mfg);
+  }
+  #zcode-swarm-report .zr-kmeta-item { min-width: 0; overflow-wrap: anywhere; }
+  #zcode-swarm-report .zr-kmeta-item[data-mono="true"] { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; }
+  #zcode-swarm-report .zr-ksep { opacity: 0.55; }
+  #zcode-swarm-report .zr-ksum {
+    margin: 0;
+    min-width: 0;
+    font-size: 12px;
+    color: var(--zr-mfg);
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    line-clamp: 3;
+    overflow: hidden;
+  }
+
+  /* ───────────── 验证门禁 ───────────── */
+  #zcode-swarm-report .zr-gate {
+    display: grid;
+    gap: 9px;
+    min-width: 0;
+    padding: 14px 16px;
+    border-radius: var(--zr-radius);
+    border: 1px solid var(--zr-line);
+    background: var(--zr-surface);
+  }
+  #zcode-swarm-report .zr-gate-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+  #zcode-swarm-report .zr-gate-badge {
+    --zr-st: var(--zr-mfg);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--zr-st);
+    background: var(--zr-surface);
+    background: color-mix(in srgb, var(--zr-st) 12%, transparent);
+  }
+  #zcode-swarm-report .zr-gate-detail { font-size: 11.5px; color: var(--zr-mfg); min-width: 0; overflow-wrap: anywhere; }
+  #zcode-swarm-report .zr-cmd {
+    display: block;
+    min-width: 0;
+    margin: 0;
+    padding: 8px 11px;
+    border-radius: 9px;
+    background: var(--zr-card-bg);
+    background: color-mix(in srgb, var(--zr-mfg) 8%, transparent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--zr-fg);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+  #zcode-swarm-report .zr-tail {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--zr-line);
+    background: var(--zr-surface);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    color: var(--zr-mfg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 9em;
+    overflow-y: auto;
+  }
+
+  /* ───────────── 需要你处理（低饱和告警块） ───────────── */
+  #zcode-swarm-report .zr-notes { display: grid; gap: 8px; min-width: 0; }
+  #zcode-swarm-report .zr-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 12px 10px 14px;
+    border-radius: 12px;
+    border: 1px solid var(--zr-line);
+    border-left: 3px solid var(--yellow, #d97706);
+    background: var(--zr-surface);
+    background: color-mix(in srgb, var(--yellow, #d97706) 9%, transparent);
+    animation: zr-rise 0.38s ease-out both;
+    animation-delay: calc(var(--zr-i, 0) * 42ms + 160ms);
+  }
+  #zcode-swarm-report .zr-note-text { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--zr-fg); overflow-wrap: anywhere; }
+  #zcode-swarm-report .zr-note-chips { display: inline-flex; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; }
+  #zcode-swarm-report .zr-mini {
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--zr-line);
+    background: var(--zr-surface);
+    font-size: 10.5px;
+    color: var(--zr-mfg);
+    white-space: nowrap;
+  }
+  #zcode-swarm-report .zr-mini[data-tone="verified"] { color: var(--green, #16a34a); border-color: color-mix(in srgb, var(--green, #16a34a) 34%, transparent); }
+  #zcode-swarm-report .zr-mini[data-tone="unconfirmed"] { color: var(--yellow, #d97706); border-color: color-mix(in srgb, var(--yellow, #d97706) 34%, transparent); }
+
+  /* ───────────── 下轮待办 ───────────── */
+  #zcode-swarm-report .zr-defer { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; min-width: 0; }
+  #zcode-swarm-report .zr-drow {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--zr-line);
+    background: var(--zr-surface);
+    animation: zr-rise 0.38s ease-out both;
+    animation-delay: calc(var(--zr-i, 0) * 42ms + 160ms);
+  }
+  #zcode-swarm-report .zr-didx {
+    flex: 0 0 auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--zr-mfg);
+    padding-top: 3px;
+  }
+  #zcode-swarm-report .zr-dbody { display: grid; gap: 2px; min-width: 0; }
+  #zcode-swarm-report .zr-dtitle { margin: 0; font-size: 12.5px; font-weight: 500; color: var(--zr-fg); overflow-wrap: anywhere; }
+  #zcode-swarm-report .zr-dreason { margin: 0; font-size: 11.5px; color: var(--zr-mfg); overflow-wrap: anywhere; }
+
+  /* ───────────── 团队角色模型（agent_models 新契约） ───────────── */
+  #zcode-swarm-report .zr-models { display: grid; gap: 8px; min-width: 0; }
+  #zcode-swarm-report .zr-mrow {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    min-width: 0;
+    padding: 9px 12px;
+    border-radius: 12px;
+    border: 1px solid var(--zr-line);
+    background: var(--zr-surface);
+    animation: zr-rise 0.38s ease-out both;
+    animation-delay: calc(var(--zr-i, 0) * 42ms + 160ms);
+  }
+  #zcode-swarm-report .zr-mrole {
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--zr-fg);
+    overflow-wrap: anywhere;
+  }
+  #zcode-swarm-report .zr-mid {
+    flex: 1 1 200px;
+    min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--zr-mfg);
+    overflow-wrap: anywhere;
+  }
+  #zcode-swarm-report .zr-msrc {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  /* 宿主设置＝实心标签；继承默认＝弱化描边标签 */
+  #zcode-swarm-report .zr-msrc[data-src="host"] {
+    color: var(--primary, #4f46e5);
+    background: var(--zr-surface);
+    background: color-mix(in srgb, var(--primary, #4f46e5) 14%, transparent);
+    border: 1px solid var(--zr-line);
+    border: 1px solid color-mix(in srgb, var(--primary, #4f46e5) 30%, transparent);
+  }
+  #zcode-swarm-report .zr-msrc[data-src="inherit"] {
+    color: var(--zr-mfg);
+    background: transparent;
+    border: 1px dashed var(--zr-line);
+    border: 1px dashed color-mix(in srgb, var(--zr-mfg) 45%, transparent);
+  }
+  #zcode-swarm-report .zr-mnote {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--zr-mfg);
+    overflow-wrap: anywhere;
+  }
+
+  /* ───────────── 空态 ───────────── */
+  #zcode-swarm-report .zr-empty {
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+    padding: 30px 20px;
+    border-radius: 16px;
+    border: 1px dashed var(--zr-line);
+    color: var(--zr-mfg);
+    text-align: center;
+    animation: zr-fade 0.4s ease-out both;
+  }
+  #zcode-swarm-report .zr-empty-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 2px dashed var(--zr-line);
+    border: 2px dashed color-mix(in srgb, var(--zr-mfg) 42%, transparent);
+  }
+  #zcode-swarm-report .zr-empty-text { margin: 0; font-size: 12.5px; }
+
+  /* ──────────── 状态标记：DOM API 创建 SVG（无外链、无字符串拼装） ──────────── */
+  #zcode-swarm-report .zr-mark { display: inline-block; flex: 0 0 auto; width: 12px; height: 12px; vertical-align: -2px; }
+  #zcode-swarm-report .zr-mark svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  #zcode-swarm-report .zr-mark[data-k="check"] { animation: zr-pop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+  #zcode-swarm-report .zr-mark[data-k="cross"] { animation: zr-shake 0.4s ease-in-out 1; }
+  #zcode-swarm-report .zr-mark[data-k="dot"] { width: 8px; height: 8px; }
+  #zcode-swarm-report .zr-mark[data-k="dot"] svg { stroke-width: 0; fill: currentColor; }
+
+  /* ───────────── 窄容器降级（375px 原生可读，无横向滚动） ───────────── */
+  @media (max-width: 460px) {
+    #zcode-swarm-report { gap: 14px; }
+    #zcode-swarm-report .zr-hero { padding: 18px 16px 16px; border-radius: 16px; gap: 12px; }
+    #zcode-swarm-report .zr-score-num { font-size: 46px; }
+    #zcode-swarm-report .zr-tile { padding: 11px 12px 10px; }
+    #zcode-swarm-report .zr-tile-value { font-size: 23px; }
+    #zcode-swarm-report .zr-kcard { padding: 12px 13px 13px 15px; }
+    #zcode-swarm-report .zr-gate { padding: 12px 13px; }
+    #zcode-swarm-report .zr-gate-top { gap: 6px; }
+  }
+
+  /* ══════════ 关键帧（只用 transform + opacity） ══════════ */
+  @keyframes zr-card-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes zr-rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes zr-fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes zr-hero-num { from { opacity: 0; transform: scale(0.94) translateY(6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  @keyframes zr-seg-in { from { opacity: 0; transform: scaleX(0); } to { opacity: 1; transform: scaleX(1); } }
+  @keyframes zr-pop { 0% { opacity: 0; transform: scale(0.4); } 70% { opacity: 1; transform: scale(1.12); } 100% { opacity: 1; transform: scale(1); } }
+  @keyframes zr-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-2px); } 40% { transform: translateX(2px); } 60% { transform: translateX(-1px); } 80% { transform: translateX(1px); } }
+
+  /* 尊重「减弱动效」：时长压到近零，避免前庭不适 */
+  @media (prefers-reduced-motion: reduce) {
+    #zcode-swarm-report *,
+    #zcode-swarm-report *::before,
+    #zcode-swarm-report *::after {
+      animation-duration: 0.01s !important;
+      animation-delay: 0s !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01s !important;
+    }
+  }
+</style>
+<script>
+(function () {
+  var root = document.getElementById("zcode-swarm-report");
+  /* 数据由 swarm-ledger.mjs render report 注入：占位符整体替换成 JSON，勿改这行格式 */
+  var DATA = /*@@DATA@@*/null/*@@END@@*/;
+
+  /* ══════════ 工具：全部走 DOM API，DATA 一律 textContent / setAttribute ══════════ */
+  function el(tag, cls) { var n = document.createElement(tag); if (cls) n.className = cls; return n; }
+  function tx(node, s) { node.textContent = String(s == null ? "" : s); return node; }
+  function span(cls, text) { return tx(el("span", cls), text); }
+  function pick(o, keys) {
+    if (!o) return "";
+    for (var i = 0; i < keys.length; i++) {
+      var v = o[keys[i]];
+      if (v !== undefined && v !== null && v !== "") return v;
+    }
+    return "";
+  }
+  function cut(v, n) { var s = String(v == null ? "" : v); return s.length > n ? s.slice(0, n) + "…" : s; }
+  /* 台账标题形如「团队施工报告：8/8 张任务卡通过」，英雄区已用超大数字表达结论，标题只留前缀避免重复。
+     仅在「报告」前缀 + 比例结论的组合上截断，普通含斜杠的标题（如「重构 3/5 页面」）原样保留。 */
+  function displayTitle(raw) {
+    var s = String(raw == null ? "" : raw).trim();
+    if (!s) return "团队施工报告";
+    var stem = s.replace(/\s*[：:]\s*\d+\s*\/\s*\d+[\s\S]*$/, "").trim();
+    if (stem && stem.length >= 2 && stem !== s && /报告|报告卡/.test(stem)) return stem;
+    return s;
+  }
+  function reduced() {
+    try { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
+    catch (e) { return false; }
+  }
+  /* 状态图标：用 DOM API 拼 SVG（createElementNS），不拼 HTML 字符串 */
+  var NS = "http://www.w3.org/2000/svg";
+  var ICONS = {
+    check: "M2.2 6.6l2.6 2.7 5-6.2",
+    cross: "M2.6 2.6l6.8 6.8M9.4 2.6l-6.8 6.8",
+    dot: "M4.8 0a4.8 4.8 0 1 1 0 9.6 4.8 4.8 0 0 1 0-9.6z"
+  };
+  function mark(kind) {
+    var m = el("span", "zr-mark");
+    m.setAttribute("data-k", kind);
+    m.setAttribute("aria-hidden", "true");
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", kind === "dot" ? "0 0 9.6 9.6" : "0 0 12 12");
+    var path = document.createElementNS(NS, "path");
+    path.setAttribute("d", ICONS[kind] || ICONS.dot);
+    svg.appendChild(path);
+    m.appendChild(svg);
+    return m;
+  }
+  function stagger(node, i) { node.style.setProperty("--zr-i", String(i)); return node; }
+
+  /* 状态别名 → 规范状态（保持旧台账兼容；六态中文口径与 ui/panel.html、board-card.html 一致） */
+  var STAGES = {
+    pending: "pending", "待开工": "pending", queued: "pending", wait: "pending",
+    working: "working", building: "working", "施工中": "working",
+    reviewing: "reviewing", review: "reviewing", "审查中": "reviewing",
+    rework: "rework", reworking: "rework", "返工中": "rework", "返工": "rework",
+    passed: "passed", pass: "passed", ok: "passed", "通过": "passed", "已通过": "passed",
+    failed: "failed", fail: "failed", error: "failed", "未通过": "failed"
+  };
+  function normStatus(v) { return STAGES[String(v == null ? "" : v).trim().toLowerCase()] || "pending"; }
+
+  /* Gate 状态别名 → 规范状态（中英文/下划线混写全部兼容） */
+  var GATES = {
+    passed: "passed", pass: "passed", "通过": "passed", ok: "passed", success: "passed",
+    failed: "failed", fail: "failed", "未通过": "failed", error: "failed",
+    running: "running", "运行中": "running",
+    pending: "pending", "待运行": "pending", waiting: "pending",
+    not_run: "not_run", notrun: "not_run", skipped: "not_run", "未运行": "not_run", none: "not_run", off: "not_run"
+  };
+
+  var STATE_ORDER = ["passed", "failed", "rework", "reviewing", "working", "pending"];
+  var STATE_META = {
+    passed: { label: "已通过", tone: "pass", legend: "已通过" },
+    failed: { label: "未通过", tone: "fail", legend: "未通过" },
+    rework: { label: "返工中", tone: "warn", legend: "返工中" },
+    reviewing: { label: "审查中", tone: "run", legend: "审查中" },
+    working: { label: "施工中", tone: "run", legend: "施工中" },
+    pending: { label: "待开工", tone: "neutral", legend: "待开工" }
+  };
+  function stateMeta(st) { return STATE_META[st] || STATE_META.pending; }
+  /* 状态分布：英雄区色段图例，解释每段颜色；只有出现两种以上状态才有解释价值 */
+  function stateGroups(cards) {
+    var counts = {}, order = [];
+    cards.forEach(function (c) {
+      var st = cardState(c);
+      if (!counts[st]) { counts[st] = 0; order.push(st); }
+      counts[st]++;
+    });
+    order = STATE_ORDER.filter(function (st) { return counts[st]; });
+    if (order.length < 2) return [];
+    return order.map(function (st) {
+      return { st: st, count: counts[st], label: stateMeta(st).legend };
+    });
+  }
+
+  function cardState(card) {
+    var raw = pick(card, ["result", "status", "stage", "state", "outcome"]);
+    if (!raw) return "pending";
+    return normStatus(raw);
+  }
+  function isPassed(card) { return cardState(card) === "passed"; }
+
+  function cardRounds(card) {
+    return Number(pick(card, ["rework", "reworks", "rework_rounds", "reworkRounds", "rounds", "round"]) || 0) || 0;
+  }
+
+  function findingParts(f) {
+    if (f === null || f === undefined) return { text: "", where: "", status: "", statusKind: "" };
+    if (typeof f === "string") return { text: f, where: "", status: "", statusKind: "" };
+    var text = pick(f, ["what", "message", "note", "text", "title", "summary"]) || "未说明";
+    var where = pick(f, ["where", "card", "card_id", "cardId", "scope"]);
+    var rawStatus = pick(f, ["status"]);
+    var status = rawStatus === "verified" ? "已核实" : rawStatus === "unconfirmed" ? "待核实" : String(rawStatus || "");
+    var kind = rawStatus === "verified" ? "verified" : rawStatus === "unconfirmed" ? "unconfirmed" : "";
+    return { text: String(text), where: String(where || ""), status: status, statusKind: kind };
+  }
+
+  function deferredParts(item) {
+    if (typeof item === "string") return { title: item, reason: "" };
+    if (!item || typeof item !== "object") return { title: "未说明", reason: "" };
+    var title = pick(item, ["title", "name", "what", "text"]);
+    var reason = pick(item, ["reason", "note", "detail"]);
+    if (!title) title = pick(item, ["summary", "text"]) || "未说明";
+    else if (!reason) reason = pick(item, ["summary"]);
+    if (reason && String(reason) === String(title)) reason = "";
+    return { title: String(title), reason: String(reason || "") };
+  }
+
+  /* 新契约：agent_models.resolved = [{role, model, source}]；缺失则整块隐藏（旧台账回放） */
+  function agentModelRows(d) {
+    var am = d.agent_models || d.agentModels;
+    if (!am) return [];
+    var list = Array.isArray(am) ? am : am.resolved;
+    if (!Array.isArray(list)) return [];
+    var rows = [];
+    list.forEach(function (item) {
+      if (typeof item === "string") { rows.push({ role: "", model: item, source: "" }); return; }
+      if (!item || typeof item !== "object") return;
+      var role = String(pick(item, ["role", "agent", "name", "key"]) || "");
+      var model = String(pick(item, ["model", "id", "model_id", "modelId", "full", "resolved"]) || "");
+      var source = String(pick(item, ["source", "from", "origin"]) || "");
+      if (role || model) rows.push({ role: role, model: model, source: source });
+    });
+    return rows;
+  }
+  function agentModelNote(d) {
+    var am = d.agent_models || d.agentModels;
+    if (am && typeof am === "object" && !Array.isArray(am) && typeof am.note === "string" && am.note.trim()) return am.note.trim();
+    return "模型由 ZCode 设置 → 子智能体决定，插件不再配置模型。";
+  }
+  function sourceKind(s) {
+    var t = String(s || "").trim().toLowerCase();
+    if (!t) return "inherit";
+    if (t.indexOf("宿主") >= 0 || t.indexOf("host") >= 0) return "host";
+    return "inherit";
+  }
+
+  function gateInfo(d) {
+    var gateVal = pick(d, ["gate", "gate_command", "gateCommand"]);
+    var gateObj = gateVal && typeof gateVal === "object" ? gateVal : null;
+    var command = gateObj ? String(pick(gateObj, ["command", "cmd", "gate"]) || "") : String(gateVal || "");
+    var raw = pick(d, ["gate_status", "gateStatus"]) || (gateObj ? pick(gateObj, ["status", "state"]) : "");
+    var rounds = Number((gateObj ? pick(gateObj, ["rounds", "round"]) : "") || pick(d, ["gate_rounds", "gateRounds"]) || 0) || 0;
+    var norm = raw ? (GATES[String(raw).trim().toLowerCase()] || "") : "";
+    return { command: command, raw: String(raw || ""), rounds: rounds, norm: norm };
+  }
+  function gateMeta(g) {
+    if (g.norm === "passed") return { label: "通过", tone: "pass", detail: g.rounds > 0 ? "修复 " + g.rounds + " 轮后通过" : "一次通过" };
+    if (g.norm === "failed") return { label: "未通过", tone: "fail", detail: g.rounds > 0 ? "修复 " + g.rounds + " 轮后仍未通过" : "验证未通过" };
+    if (g.norm === "running") return { label: "运行中", tone: "run", detail: "验证进行中" };
+    if (g.norm === "pending") return { label: "待运行", tone: "neutral", detail: "验证尚未开始" };
+    if (g.norm === "not_run") return { label: "未运行", tone: "neutral", detail: "已配置验证命令，尚未执行" };
+    return { label: g.raw ? cut(g.raw, 20) : "未运行", tone: "neutral", detail: g.raw ? "" : "未配置验证命令" };
+  }
+
+  function computeStats(d) {
+    var cards = Array.isArray(d.cards) ? d.cards : [];
+    var total = cards.length, passed = 0, failed = 0, rounds = 0, reworkCards = 0;
+    cards.forEach(function (c) {
+      var st = cardState(c);
+      if (st === "passed") passed++;
+      else if (st === "failed") failed++;
+      var r = cardRounds(c);
+      rounds += r;
+      if (r > 0) reworkCards++;
+    });
+    if (!total) {
+      var t = Number(pick(d, ["total", "card_total", "cardTotal"]) || 0) || 0;
+      var p = Number(pick(d, ["passed", "passed_count", "passedCount"]) || 0) || 0;
+      if (t > 0) { total = t; passed = p; failed = Math.max(0, t - p); }
+    }
+    var pct = total ? Math.round(passed / total * 100) : 0;
+    var tone = !total ? "neutral" : passed === total ? "pass" : passed === 0 ? "fail" : "mixed";
+    return { total: total, passed: passed, failed: failed, rounds: rounds, reworkCards: reworkCards, pct: pct, tone: tone };
+  }
+
+  function verdictText(stats) {
+    if (!stats.total) return "暂无任务卡";
+    if (stats.passed === stats.total) return "全部通过";
+    if (stats.passed === 0) return stats.failed > 0 ? "全部未通过" : "暂无通过的卡";
+    return "部分通过";
+  }
+
+  function countUp(node, to, dur) {
+    if (reduced() || to <= 0) { node.textContent = String(to); return; }
+    var start = null;
+    function step(ts) {
+      if (start === null) start = ts;
+      var t = Math.min(1, (ts - start) / dur);
+      var eased = 1 - Math.pow(1 - t, 3);
+      node.textContent = String(Math.round(to * eased));
+      if (t < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* ══════════ 区块构造 ══════════ */
+  function buildHero(d, stats, req) {
+    var hero = el("section", "zr-hero");
+    var head = el("div", "zr-hero-head");
+    var title = tx(el("h3", "zr-title"), displayTitle(pick(d, ["title"])));
+    head.appendChild(title);
+    var verdict = el("span", "zr-verdict");
+    verdict.appendChild(mark(stats.tone === "pass" ? "check" : stats.tone === "fail" ? "cross" : "dot"));
+    verdict.appendChild(span("", verdictText(stats)));
+    head.appendChild(verdict);
+    hero.appendChild(head);
+
+    var body = el("div", "zr-hero-body");
+    var score = el("div", "zr-score");
+    var num = span("zr-score-num", stats.total ? "0" : "—");
+    score.appendChild(num);
+    if (stats.total) score.appendChild(span("zr-score-den", "/ " + stats.total));
+    body.appendChild(score);
+
+    var aside = el("div", "zr-hero-aside");
+    aside.appendChild(span("zr-score-cap", stats.total ? "任务卡通过" : "任务卡未记录"));
+    aside.appendChild(span("zr-score-pct", stats.total ? "通过率 " + stats.pct + "%" : "等待台账数据"));
+    body.appendChild(aside);
+
+    var groups = stats.total && Array.isArray(d.cards) ? stateGroups(d.cards) : [];
+    if (groups.length) {
+      var legend = el("div", "zr-legend");
+      groups.forEach(function (g) {
+        var item = el("span", "zr-legend-item");
+        var dot = el("span", "zr-legend-dot");
+        dot.setAttribute("data-st", g.st);
+        item.appendChild(dot);
+        item.appendChild(span("zr-legend-num", String(g.count)));
+        item.appendChild(span("", g.label));
+        legend.appendChild(item);
+      });
+      body.appendChild(legend);
+    }
+    hero.appendChild(body);
+
+    var cards = Array.isArray(d.cards) ? d.cards : [];
+    if (cards.length) {
+      var segs = el("div", "zr-segs");
+      segs.setAttribute("aria-hidden", "true");
+      cards.forEach(function (c, i) {
+        var st = cardState(c);
+        var seg = el("span", "zr-seg");
+        seg.setAttribute("data-st", st);
+        var label = (pick(c, ["id", "no", "num"]) ? "#" + pick(c, ["id", "no", "num"]) + " " : "") + (pick(c, ["title", "name"]) || "") + "：" + stateMeta(st).label;
+        seg.setAttribute("title", label);
+        stagger(seg, i);
+        segs.appendChild(seg);
+      });
+      hero.appendChild(segs);
+    }
+
+    if (req) {
+      var reqBox = el("div", "zr-req");
+      reqBox.appendChild(span("zr-req-label", "需求原文"));
+      reqBox.appendChild(span("", cut(req, 200)));
+      hero.appendChild(reqBox);
+    }
+    if (stats.total) countUp(num, stats.passed, 560);
+    return hero;
+  }
+
+  function buildTiles(stats, gate) {
+    var wrap = el("div", "zr-tiles");
+    var gm = gateMeta(gate);
+    var items = [];
+    if (stats.total) {
+      items.push({
+        value: String(stats.passed), word: false, label: "任务卡通过", tone: stats.passed ? "pass" : "neutral",
+        sub: "共 " + stats.total + " 张"
+      });
+      items.push({
+        value: String(stats.failed), word: false, label: "未通过", tone: stats.failed ? "fail" : "neutral",
+        sub: stats.failed ? "需要返工" : stats.passed === stats.total ? "全部通过" : "无未通过卡"
+      });
+      items.push({
+        value: String(stats.rounds), word: false, label: "返工轮次", tone: stats.rounds ? "warn" : "neutral",
+        sub: stats.rounds ? stats.reworkCards + " 张卡有返工" : "零返工"
+      });
+    }
+    items.push({
+      value: gm.label, word: true, label: "验证门禁", tone: gm.tone,
+      sub: gate.rounds > 0 ? "修复 " + gate.rounds + " 轮" : gate.command ? cut(gate.command, 24) : "未配置命令"
+    });
+    items.forEach(function (it, i) {
+      var tile = el("div", "zr-tile");
+      tile.setAttribute("data-tone", it.tone);
+      stagger(tile, i);
+      var v = span("zr-tile-value", it.value);
+      if (it.word) v.setAttribute("data-word", "true");
+      tile.appendChild(v);
+      tile.appendChild(span("zr-tile-label", it.label));
+      tile.appendChild(span("zr-tile-sub", it.sub));
+      wrap.appendChild(tile);
+    });
+    return wrap;
+  }
+
+  function makeSection(titleText, countText, tone) {
+    var sec = el("section", "zr-sec");
+    if (tone) sec.setAttribute("data-tone", tone);
+    var head = el("div", "zr-sec-head");
+    var h = tx(el("h4", "zr-h"), titleText);
+    head.appendChild(h);
+    if (countText) head.appendChild(span("zr-count", countText));
+    sec.appendChild(head);
+    var body = document.createElement("div");
+    sec.appendChild(body);
+    return { sec: sec, body: body };
+  }
+
+  function buildCards(d) {
+    var cards = d.cards;
+    var sec = makeSection("任务卡", cards.length + " 张");
+    var grid = el("div", "zr-grid");
+    cards.forEach(function (c, i) {
+      var st = cardState(c);
+      var meta = stateMeta(st);
+      var card = el("article", "zr-kcard");
+      card.setAttribute("data-st", st);
+      stagger(card, i);
+
+      var top = el("div", "zr-kcard-top");
+      var id = pick(c, ["id", "no", "num"]);
+      if (id) {
+        var idText = String(id);
+        if (/^\d+$/.test(idText) && idText.length < 2) idText = "0" + idText;
+        top.appendChild(span("zr-kid", "#" + idText));
+      }
+      var chip = el("span", "zr-stchip");
+      chip.setAttribute("data-st", st);
+      chip.appendChild(mark(st === "passed" ? "check" : st === "failed" ? "cross" : "dot"));
+      chip.appendChild(span("", meta.label));
+      top.appendChild(chip);
+      card.appendChild(top);
+
+      card.appendChild(tx(el("h5", "zr-ktitle"), pick(c, ["title", "name"]) || "(无标题)"));
+
+      var role = String(pick(c, ["role"]) || "");
+      /* 旧台账 model 是档位，新契约 model 是角色名（常与 role 相同）；重复或占位值不展示 */
+      var model = String(pick(c, ["model", "model_id", "modelId"]) || "");
+      if (model === role || model === "—" || model === "-") model = "";
+      var rounds = cardRounds(c);
+      if (role || model || rounds > 0) {
+        var m = el("div", "zr-kmeta");
+        if (role) m.appendChild(span("zr-kmeta-item", role));
+        if (model && model !== role) {
+          if (role) m.appendChild(span("zr-ksep", "·"));
+          // 模型 id 很长（provider/…$level），卡里截断显示、完整值挂 title 悬停查看，避免折成两行。
+          var mi = span("zr-kmeta-item", cut(model, 34));
+          mi.setAttribute("data-mono", "true");
+          mi.setAttribute("title", model);
+          m.appendChild(mi);
+        }
+        if (rounds > 0) {
+          if (role || model) m.appendChild(span("zr-ksep", "·"));
+          m.appendChild(span("zr-kmeta-item", "返工 " + rounds + " 轮"));
+        }
+        card.appendChild(m);
+      }
+
+      var note = String(pick(c, ["note", "summary", "detail", "description", "comment"]) || "");
+      if (note) {
+        var sum = span("zr-ksum", cut(note, 400));
+        sum.setAttribute("title", note);
+        card.appendChild(sum);
+      }
+      grid.appendChild(card);
+    });
+    sec.body.appendChild(grid);
+    return sec.sec;
+  }
+
+  function buildGate(g) {
+    var gm = gateMeta(g);
+    var sec = makeSection("验证门禁", g.rounds > 0 ? "修复 " + g.rounds + " 轮" : (g.norm === "passed" ? "一次通过" : ""));
+    var panel = el("div", "zr-gate");
+    var top = el("div", "zr-gate-top");
+    var badge = el("span", "zr-gate-badge");
+    badge.setAttribute("data-st", gm.tone === "pass" ? "passed" : gm.tone === "fail" ? "failed" : gm.tone === "run" ? "working" : "pending");
+    badge.appendChild(mark(gm.tone === "pass" ? "check" : gm.tone === "fail" ? "cross" : "dot"));
+    badge.appendChild(span("", gm.label + (g.rounds > 0 && (g.norm === "passed" || g.norm === "failed") ? "（修复 " + g.rounds + " 轮）" : "")));
+    top.appendChild(badge);
+    if (gm.detail) top.appendChild(span("zr-gate-detail", gm.detail));
+    panel.appendChild(top);
+    if (g.command) {
+      var cmd = el("code", "zr-cmd");
+      tx(cmd, cut(String(g.command), 300));
+      panel.appendChild(cmd);
+    }
+    sec.body.appendChild(panel);
+    return sec.sec;
+  }
+
+  function buildGateTail(d, sec) {
+    var tailText = pick(d, ["gate_tail", "gateTail", "tail", "gate_output", "gateOutput"]);
+    if (!tailText) return;
+    var pre = el("pre", "zr-tail");
+    tx(pre, cut(String(tailText).trim(), 400));
+    sec.body.appendChild(pre);
+  }
+
+  function buildFindings(d) {
+    var findings = Array.isArray(d.findings) ? d.findings : [];
+    var count = findings.length || Number(pick(d, ["findings_count", "findingsCount", "finding_count"]) || 0) || 0;
+    if (!count) return null;
+    var sec = makeSection("需要你处理", count + " 项", "warn");
+    var notes = el("div", "zr-notes");
+    if (!findings.length) {
+      notes.appendChild(span("zr-note-text", "详情见原始报告输出"));
+    } else {
+      findings.forEach(function (f, i) {
+        var parts = findingParts(f);
+        var row = el("div", "zr-note");
+        stagger(row, i);
+        row.appendChild(span("zr-note-text", cut(parts.text, 220)));
+        var chips = el("div", "zr-note-chips");
+        if (parts.where) chips.appendChild(span("zr-mini", parts.where));
+        if (parts.status) {
+          var st = span("zr-mini", parts.status);
+          if (parts.statusKind) st.setAttribute("data-tone", parts.statusKind);
+          chips.appendChild(st);
+        }
+        if (chips.childNodes.length) row.appendChild(chips);
+        notes.appendChild(row);
+      });
+    }
+    sec.body.appendChild(notes);
+    return sec.sec;
+  }
+
+  function buildDeferred(d) {
+    var list = Array.isArray(d.deferred) ? d.deferred : Array.isArray(d.next) ? d.next : [];
+    var count = list.length || Number(pick(d, ["deferred_count", "deferredCount"]) || 0) || 0;
+    if (!count) return null;
+    var sec = makeSection("下轮待办", count + " 项", "mute");
+    var ul = el("ul", "zr-defer");
+    if (!list.length) {
+      ul.appendChild(span("zr-dreason", "详情见原始报告输出"));
+    } else {
+      list.forEach(function (item, i) {
+        var parts = deferredParts(item);
+        var row = el("li", "zr-drow");
+        stagger(row, i);
+        var idx = String(i + 1);
+        if (idx.length < 2) idx = "0" + idx;
+        row.appendChild(span("zr-didx", idx));
+        var bodyBox = el("div", "zr-dbody");
+        bodyBox.appendChild(tx(el("p", "zr-dtitle"), cut(parts.title, 220)));
+        if (parts.reason) bodyBox.appendChild(tx(el("p", "zr-dreason"), cut(parts.reason, 180)));
+        row.appendChild(bodyBox);
+        ul.appendChild(row);
+      });
+    }
+    sec.body.appendChild(ul);
+    return sec.sec;
+  }
+
+  function buildModels(d) {
+    var rows = agentModelRows(d);
+    if (!rows.length) return null;
+    var sec = makeSection("团队角色模型", rows.length + " 个角色", "mute");
+    var note = tx(el("p", "zr-mnote"), agentModelNote(d));
+    sec.body.appendChild(note);
+    var list = el("div", "zr-models");
+    rows.forEach(function (r, i) {
+      var row = el("div", "zr-mrow");
+      stagger(row, i);
+      if (r.role) row.appendChild(span("zr-mrole", r.role));
+      var modelShown = (!r.model || r.model === "inherit") ? "跟随会话模型" : r.model;
+      var mid = span("zr-mid", modelShown);
+      row.appendChild(mid);
+      if (r.source) {
+        var src = span("zr-msrc", r.source);
+        src.setAttribute("data-src", sourceKind(r.source));
+        row.appendChild(src);
+      }
+      list.appendChild(row);
+    });
+    sec.body.appendChild(list);
+    return sec.sec;
+  }
+
+  function buildEmpty() {
+    var box = el("div", "zr-empty");
+    box.appendChild(el("span", "zr-empty-mark"));
+    box.appendChild(tx(el("p", "zr-empty-text"), "暂无报告数据"));
+    return box;
+  }
+
+  /* ══════════ 渲染入口 ══════════ */
+  function render() {
+    var d = DATA && typeof DATA === "object" ? DATA : {};
+    var stats = computeStats(d);
+    var gate = gateInfo(d);
+    var req = String(pick(d, ["requirement", "original", "prompt", "request"]) || "");
+    var findings = Array.isArray(d.findings) ? d.findings : [];
+    var deferred = Array.isArray(d.deferred) ? d.deferred : Array.isArray(d.next) ? d.next : [];
+    var modelRows = agentModelRows(d);
+    var hasAny = !!stats.total || !!req || !!gate.command || !!gate.raw || findings.length > 0 ||
+      deferred.length > 0 || modelRows.length > 0 ||
+      Number(pick(d, ["findings_count", "findingsCount", "finding_count"]) || 0) > 0 ||
+      Number(pick(d, ["deferred_count", "deferredCount"]) || 0) > 0;
+
+    if (!hasAny) {
+      root.setAttribute("data-tone", "neutral");
+      root.appendChild(buildEmpty());
+      return;
+    }
+
+    root.setAttribute("data-tone", stats.tone);
+    root.appendChild(buildHero(d, stats, req));
+    if (stats.total) root.appendChild(buildTiles(stats, gate));
+
+    var secIndex = 0;
+    function appendSec(sec) {
+      if (!sec) return;
+      sec.style.setProperty("--zr-sec-delay", String(110 + secIndex * 60) + "ms");
+      secIndex++;
+      root.appendChild(sec);
+    }
+
+    if (stats.total) appendSec(buildCards(d));
+    if (gate.command || gate.raw) {
+      var gateSec = buildGate(gate);
+      buildGateTail(d, gateSec);
+      appendSec(gateSec);
+    }
+    appendSec(buildFindings(d));
+    appendSec(buildDeferred(d));
+    appendSec(buildModels(d));
+  }
+
+  render();
+})();
+</script>
+</div>

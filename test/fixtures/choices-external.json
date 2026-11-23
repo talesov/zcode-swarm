@@ -1,0 +1,6 @@
+{
+  "cards": { "1": "magpie/kimi-code-cn/k3.1-pro$high", "2": "strong" },
+  "review_model": "strong",
+  "splitter_model": "light",
+  "fixer_model": "hard"
+}

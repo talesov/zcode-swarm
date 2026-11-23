@@ -1,0 +1,28 @@
+{
+  "description": "zcode-swarm: 会话启动时恢复未完成的团队运行（检查 .swarm/ledger.json）。",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": true,
+            "command": "node \"${ZCODE_PLUGIN_ROOT}/scripts/swarm-ledger.mjs\" recover",
+            "timeoutMs": 10000,
+            "onError": "allow",
+            "statusMessage": "zcode-swarm: 检查未完成的团队运行…"
+          },
+          {
+            "type": "command",
+            "shell": true,
+            "command": "node \"${ZCODE_PLUGIN_ROOT}/scripts/swarm-config.mjs\" ensure --quiet",
+            "timeoutMs": 15000,
+            "onError": "allow",
+            "statusMessage": "zcode-swarm: 同步团队配置…"
+          }
+        ]
+      }
+    ]
+  }
+}

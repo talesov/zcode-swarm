@@ -1,0 +1,6 @@
+{
+  "cards": [
+    { "id": "1", "title": "甲", "task": "做甲", "scope": "src/a", "acceptance": "测试通过", "model": "light" },
+    { "id": "2", "title": "乙", "task": "做乙", "scope": "src/a/b", "acceptance": "测试通过", "model": "hard" }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "zcode-swarm-market",
+  "owner": {
+    "name": "aa"
+  },
+  "plugins": [
+    {
+      "name": "zcode-swarm",
+      "source": "./",
+      "description": "Team development for ZCode (v2.0): the main session orchestrates directly with the Agent tool — one requirement splits into non-overlapping task cards, background builders run in parallel with per-card independent review, rework, dynamic expansion and a verification gate; state in .swarm/ledger.json, progress on Gen UI cards plus a persistent side-panel team board (swarm_board). Nothing to launch: send /swarm <requirement>. Models are decided by ZCode Settings → Subagents (ZCode Swarm); the plugin does not configure models.",
+      "category": "development"
+    }
+  ],
+  "version": "0.4.5",
+  "description": ""
+}

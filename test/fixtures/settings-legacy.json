@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "models": { "light": "GLM-5.3-Flash", "strong": "GLM-5.3$high", "hard": "GLM-5.3$max" },
+  "review_model": "strong",
+  "rework_rounds": 2
+}
